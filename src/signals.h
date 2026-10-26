@@ -83,7 +83,12 @@ private:
   fftwf_plan _plan = nullptr, _fplan = nullptr;
   cf *_in = nullptr, *_out = nullptr, *_fin = nullptr, *_fout = nullptr; // FFTW's buffers (the fine one 8192)
   std::vector<float> _fwin;          // its window
-  std::vector<std::pair<int, unsigned>> _steady; // fine-spectrum lines: bin, seen in which of the last 4 windows
+  struct Line {
+    int k;                           // its bin in the fine spectrum
+    unsigned seen;                   // in which of the last 4 windows
+    double comb_khz;                 // the last comb found around it (kept while it lasts)
+  };
+  std::vector<Line> _steady;
   std::vector<uint8_t> _occ;
 
   struct Track {

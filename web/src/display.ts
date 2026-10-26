@@ -35,10 +35,10 @@ const WIFI_NAME = { L: 'legacy', H: '11n', V: '11ac', B: '11b' } as const;
 // other signals share one colour (aquamarine); the hover names their kind
 export const OTHER_COLOUR = '#7fffd4';
 const OTHER_NAME = { T: 'Bluetooth', N: 'narrowband', M: 'microwave oven', E: 'BLE advertising', C: 'steady carrier' } as const;
-// video line rates (kHz: PAL/NTSC, 480p, 1080i/p30, 720p50, 800x600, 720p60, 1024x768, 1080p50,
-// 1280x1024, 1080p60, 1440p60, 4K60): a steady carrier with a comb at one of these is most likely a
-// display's pixel clock harmonic
-const LINE_RATES = [15.625, 15.734, 31.469, 33.75, 37.5, 37.879, 45, 48.363, 56.25, 63.981, 67.5, 88.8, 135];
+// video line rates (kHz: 480p, 1080i/p30, 720p50, 800x600, 720p60, 1024x768, 1080p50, 1280x1024,
+// 1080p60, 1440p60, 4K60): a steady carrier with a comb at one of these is most likely a display's pixel
+// clock harmonic (PAL/NTSC's ~15.7 kHz is below what the fine spectrum resolves)
+const LINE_RATES = [31.469, 33.75, 37.5, 37.879, 45, 48.363, 56.25, 63.981, 67.5, 88.8, 135];
 // a mark on the waterfall: a Wi-Fi frame, or another signal in the same shape (rate and length 0)
 type Mark = [t: number, mhz: number, bw: number, fmt: WifiFrame[3] | OtherSignal[3], rate: number, len: number, us: number, snr: number,
   ta?: string | null, bssid?: string | null, ssid?: string | null, ch?: number];
@@ -723,13 +723,14 @@ export class Display {
     for (const m of ms) by[OTHER_NAME[m[3] as OtherSignal[3]]] = (by[OTHER_NAME[m[3] as OtherSignal[3]]] ?? 0) + 1;
     const kinds = Object.entries(by).map(([k, n]) => (k === OTHER_NAME.M || k === OTHER_NAME.C ? k : `${k} ${n}`)).join(', ');
     const bursts = ms.filter((m) => m[3] !== 'M' && m[3] !== 'C');
-    const comb = ms.find((m) => m[3] === 'C' && m[4] > 0)?.[4] ?? 0;
+    const carrier = ms.find((m) => m[3] === 'C' && m[4] > 0) ?? ms.find((m) => m[3] === 'C');
+    const comb = carrier?.[4] ?? 0;
     const video = comb > 0 && LINE_RATES.some((r) => Math.abs(comb - r) < 0.02 * r);
     const combText = comb > 0 ? ` · comb ${comb.toFixed(1)} kHz${video ? ': a video line rate, likely a display\'s clock harmonic (HDMI/DP)' : ''}` : '';
     const mhz = ms.map((m) => m[1]).sort((a, b) => a - b), us = bursts.map((m) => m[6]).sort((a, b) => a - b);
     // BLE advertisers: a name when they send one, else the address
     const ble = [...new Set(ms.filter((m) => m[3] === 'E').map((m) => (m[10] ? `“${m[10]}” ${m[8]}` : m[8])))].slice(0, 2);
-    return `${kinds} · ${mhz[mhz.length >> 1].toFixed(comb > 0 || ms.some((m) => m[3] === 'C') ? 3 : 0)} MHz${us.length ? ` · ${us[us.length >> 1].toFixed(0)} µs` : ''}${ble.length ? ` · ${ble.join(', ')}` : ''}${combText}`;
+    return `${kinds} · ${carrier ? carrier[1].toFixed(3) : mhz[mhz.length >> 1].toFixed(0)} MHz${us.length ? ` · ${us[us.length >> 1].toFixed(0)} µs` : ''}${ble.length ? ` · ${ble.join(', ')}` : ''}${combText}`;
   }
 
   private drawSpectrum() {
@@ -873,25 +874,26 @@ export class Display {
         }
         // most likely the adapter's own 40 MHz crystal (not yet proven with a second dongle): weak steady
         // lines at n x 40 MHz (not at the centre: DC is removed there)
-        if (lr)
+        if (lr) {
+          c.strokeStyle = 'rgba(163,174,187,0.55)';
+          c.fillStyle = '#8a94a3';
+          c.font = `${9 * d}px system-ui, sans-serif`;
+          c.textAlign = 'center';
+          c.textBaseline = 'bottom';
+          c.setLineDash([2 * d, 3 * d]);
           for (let n = Math.ceil(rg.lo / 40e6); n * 40e6 < rg.hi; n++) {
             const hz = n * 40e6;
             if (Math.abs(hz - mid0) < 1e6 || !Display.onAxis(ax, hz)) continue;
             const x = Math.round(xOf(hz)) + 0.5;
-            c.strokeStyle = 'rgba(163,174,187,0.55)';
-            c.setLineDash([2 * d, 3 * d]);
             c.beginPath();
             c.moveTo(x, ph - 16 * d);
             c.lineTo(x, ph);
             c.stroke();
-            c.setLineDash([]);
-            c.font = `${9 * d}px system-ui, sans-serif`;
-            c.textAlign = 'center';
-            c.textBaseline = 'bottom';
-            c.fillStyle = '#8a94a3';
             c.fillText('spur', x, ph - 17 * d);
-            c.textBaseline = 'middle';
           }
+          c.setLineDash([]);
+          c.textBaseline = 'middle';
+        }
         // requested frequency, when the hardware centre differs (5 MHz synthesizer grid)
         const m = v.src.marker;
         if (m !== null && Display.onAxis(ax, m) && Math.abs(m - mid0) > (rg.hi - rg.lo) / 200) {
@@ -1050,7 +1052,8 @@ export class Display {
           const beforeStop = this.hoverWfY >= 0 && (this.opts.dim || (this.stopRows >= 0 && wy > this.stopRows));
           const wifi = this.hoverWfY >= 0 && !older && this.wifiKept.length ? this.wifiAt(f, Math.round(wy)) : null;
           // on one of the adapter's own lines (n x 40 MHz, within a few pixels)
-          const n40 = Math.round(f / 40e6), spur = Math.abs(f - n40 * 40e6) <= Math.max(2 * r.df, (r.df * r.bins) / 300) && Math.abs(f - (r.f0 + (r.df * r.bins) / 2)) > 1e6
+          const rr = Display.range(r), n40 = Math.round(f / 40e6);
+          const spur = Math.abs(f - n40 * 40e6) <= Math.max(2 * r.df, (rr.hi - rr.lo) / 300) && Math.abs(f - (rr.lo + rr.hi) / 2) > 1e6
             ? ` · likely adapter spur (${n40} × 40 MHz)` : '';
           const txt = older
             ? 'older rows: another frequency/span (see the label at the line)'

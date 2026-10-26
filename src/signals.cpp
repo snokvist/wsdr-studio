@@ -494,53 +494,58 @@ void Finder::carriers(std::vector<Burst> &out) {
       kept.push_back(k);
   hits.swap(kept);
   // each line's history over the last 4 windows (it may wander a bin or two)
-  for (auto &[k, h] : _steady)
-    h = (h << 1) & 0xF;
+  for (auto &l : _steady)
+    l.seen = (l.seen << 1) & 0xF;
   for (int k : hits) {
-    auto it = std::find_if(_steady.begin(), _steady.end(), [&](const auto &e) { return std::abs(e.first - k) <= 2; });
+    auto it = std::find_if(_steady.begin(), _steady.end(), [&](const Line &l) { return std::abs(l.k - k) <= 2; });
     if (it == _steady.end())
-      _steady.emplace_back(k, 1u);
+      _steady.push_back({k, 1u, 0});
     else
-      *it = {k, it->second | 1u};
+      it->k = k, it->seen |= 1u;
   }
-  _steady.erase(std::remove_if(_steady.begin(), _steady.end(), [](const auto &e) { return e.second == 0; }), _steady.end());
-  for (const auto &[k, h] : _steady) {
-    if (!(h & 1) || __builtin_popcount(h) < 3)
+  _steady.erase(std::remove_if(_steady.begin(), _steady.end(), [](const Line &l) { return l.seen == 0; }), _steady.end());
+  for (auto &l : _steady) {
+    const int k = l.k;
+    if (!(l.seen & 1) || __builtin_popcount(l.seen) < 3)
       continue;
     Burst b;
     b.t = _win_t0;
     b.mhz = hz(k) / 1e6;
     b.dur_us = kWinMs * 1e3;
     b.kind = 'C';
-    // the comb: local maxima 6 dB over their block within +-600 kHz, evenly spaced
-    std::vector<double> at;
+    // the comb: local maxima 6 dB over their block within +-600 kHz, evenly spaced, with the spectrum
+    // dipping 10 dB between neighbours (else they are bumps on one line's noisy skirt)
+    std::vector<int> at;
     const int span = static_cast<int>(600e3 / bin);
     for (int j = std::max(3, k - span); j <= std::min(kFine - 4, k + span); j++)
       if (over(j) > 4 && P[j] >= P[j - 1] && P[j] >= P[j + 1] && P[j] >= P[j - 2] && P[j] >= P[j + 2])
-        at.push_back(hz(j));
+        at.push_back(j);
     if (at.size() >= 5) {
-      std::vector<double> d;
-      for (size_t i = 1; i < at.size(); i++)
-        d.push_back(at[i] - at[i - 1]);
+      std::vector<double> d; // the spacings between teeth that are apart (Hz); 0 where they are not
+      for (size_t i = 1; i < at.size(); i++) {
+        const float lo = *std::min_element(P.begin() + at[i - 1], P.begin() + at[i]);
+        d.push_back(lo < 0.1f * std::min(P[at[i - 1]], P[at[i]]) ? (at[i] - at[i - 1]) * bin : 0);
+      }
       std::vector<double> s = d;
       std::nth_element(s.begin(), s.begin() + static_cast<long>(s.size() / 2), s.end());
       const double m = s[s.size() / 2];
       int near = 0;
       for (double v : d)
         near += std::abs(v - m) < 0.1 * m;
-      if (near >= 4 && m > 3 * bin) { // fitted to the teeth on its grid around the carrier (finer than a bin)
+      if (near >= 4 && m > 4 * bin) { // fitted to the teeth on its grid around the carrier (finer than a bin)
         double num = 0, den = 0;
-        for (double f : at) {
-          const double n = std::round((f - hz(k)) / m);
-          if (n != 0 && std::abs(f - hz(k) - n * m) < 0.2 * m) {
-            num += n * (f - hz(k));
+        for (int j : at) {
+          const double df = (j - k) * bin, n = std::round(df / m);
+          if (n != 0 && std::abs(df - n * m) < 0.2 * m) {
+            num += n * df;
             den += n * n;
           }
         }
         if (den > 0)
-          b.comb_khz = num / den / 1e3;
+          l.comb_khz = num / den / 1e3;
       }
     }
+    b.comb_khz = l.comb_khz; // (a window may miss it: the last one found holds)
     b.bw_mhz = 0.5;
     out.push_back(b);
   }
