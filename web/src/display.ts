@@ -871,8 +871,8 @@ export class Display {
             c.textBaseline = 'middle';
           }
         }
-        // the adapter's own 40 MHz crystal: its harmonics show as weak steady lines at n x 40 MHz (not at
-        // the centre: DC is removed there)
+        // most likely the adapter's own 40 MHz crystal (not yet proven with a second dongle): weak steady
+        // lines at n x 40 MHz (not at the centre: DC is removed there)
         if (lr)
           for (let n = Math.ceil(rg.lo / 40e6); n * 40e6 < rg.hi; n++) {
             const hz = n * 40e6;
@@ -1051,7 +1051,7 @@ export class Display {
           const wifi = this.hoverWfY >= 0 && !older && this.wifiKept.length ? this.wifiAt(f, Math.round(wy)) : null;
           // on one of the adapter's own lines (n x 40 MHz, within a few pixels)
           const n40 = Math.round(f / 40e6), spur = Math.abs(f - n40 * 40e6) <= Math.max(2 * r.df, (r.df * r.bins) / 300) && Math.abs(f - (r.f0 + (r.df * r.bins) / 2)) > 1e6
-            ? ` · adapter spur (${n40} × 40 MHz)` : '';
+            ? ` · likely adapter spur (${n40} × 40 MHz)` : '';
           const txt = older
             ? 'older rows: another frequency/span (see the label at the line)'
             : this.hoverWfY >= 0
