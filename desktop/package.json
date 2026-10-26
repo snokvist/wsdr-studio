@@ -2,7 +2,7 @@
   "name": "wsdr-studio",
   "productName": "wsdr-studio",
   "desktopName": "wsdr-studio.desktop",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Live spectrum from RTL8812BU/8812CU dongles (Electron shell around wsdr-studiod)",
   "license": "GPL-2.0-only",
