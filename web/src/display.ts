@@ -727,10 +727,11 @@ export class Display {
     const comb = carrier?.[4] ?? 0;
     const video = comb > 0 && LINE_RATES.some((r) => Math.abs(comb - r) < 0.02 * r);
     const combText = comb > 0 ? ` · comb ${comb.toFixed(1)} kHz${video ? ': a video line rate, likely a display\'s clock harmonic (HDMI/DP)' : ''}` : '';
-    const mhz = ms.map((m) => m[1]).sort((a, b) => a - b), us = bursts.map((m) => m[6]).sort((a, b) => a - b);
+    const us = bursts.map((m) => m[6]).sort((a, b) => a - b);
     // BLE advertisers: a name when they send one, else the address
     const ble = [...new Set(ms.filter((m) => m[3] === 'E').map((m) => (m[10] ? `“${m[10]}” ${m[8]}` : m[8])))].slice(0, 2);
-    return `${kinds} · ${carrier ? carrier[1].toFixed(3) : mhz[mhz.length >> 1].toFixed(0)} MHz${us.length ? ` · ${us[us.length >> 1].toFixed(0)} µs` : ''}${ble.length ? ` · ${ble.join(', ')}` : ''}${combText}`;
+    const mhz = carrier ? carrier[1].toFixed(3) : ms.map((m) => m[1]).sort((a, b) => a - b)[ms.length >> 1].toFixed(0);
+    return `${kinds} · ${mhz} MHz${us.length ? ` · ${us[us.length >> 1].toFixed(0)} µs` : ''}${ble.length ? ` · ${ble.join(', ')}` : ''}${combText}`;
   }
 
   private drawSpectrum() {

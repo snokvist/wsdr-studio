@@ -86,7 +86,8 @@ private:
   struct Line {
     int k;                           // its bin in the fine spectrum
     unsigned seen;                   // in which of the last 4 windows
-    double comb_khz;                 // the last comb found around it (kept while it lasts)
+    double comb_khz;                 // the last comb found around it (kept for 5 windows without one)
+    int miss;                        // reported windows since it was last found
   };
   std::vector<Line> _steady;
   std::vector<uint8_t> _occ;

@@ -499,7 +499,7 @@ void Finder::carriers(std::vector<Burst> &out) {
   for (int k : hits) {
     auto it = std::find_if(_steady.begin(), _steady.end(), [&](const Line &l) { return std::abs(l.k - k) <= 2; });
     if (it == _steady.end())
-      _steady.push_back({k, 1u, 0});
+      _steady.push_back({k, 1u, 0, 0});
     else
       it->k = k, it->seen |= 1u;
   }
@@ -541,11 +541,15 @@ void Finder::carriers(std::vector<Burst> &out) {
             den += n * n;
           }
         }
-        if (den > 0)
+        if (den > 0) {
           l.comb_khz = num / den / 1e3;
+          l.miss = -1;
+        }
       }
     }
-    b.comb_khz = l.comb_khz; // (a window may miss it: the last one found holds)
+    if (++l.miss >= 5) // (a window may miss it: the last one found holds a while)
+      l.comb_khz = 0;
+    b.comb_khz = l.comb_khz;
     b.bw_mhz = 0.5;
     out.push_back(b);
   }
