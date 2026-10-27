@@ -14,6 +14,18 @@ namespace wifi {
 
 using cf = std::complex<float>;
 
+// The equalised data subcarriers behind a frame (Decoder::keep_points), for a constellation: L-SIG
+// (BPSK), the two HT-SIG / VHT-SIG-A symbols, then a legacy frame's first payload symbols. On 802.11's
+// own scale (unit mean power per constellation), times kPointScale, as int16.
+constexpr float kPointScale = 4096;
+constexpr int kPointSymbols = 32; // payload symbols kept at most
+struct Points {
+  std::vector<std::complex<int16_t>> z;
+  uint16_t n_lsig = 0, n_sig2 = 0;   // then the payload's
+  uint8_t bits = 0;                  // payload bits per subcarrier: 1, 2, 4, 6 (0: no payload points)
+  float evm_lsig_db = 0, evm_db = 0; // decision-directed EVM of L-SIG and of the payload (0: none)
+};
+
 struct Frame {
   double t = 0;          // start (s), on the clock of the samples fed in
   double centre_hz = 0;  // the 20 MHz channel it was decoded on (40 MHz: the pair's centre)
@@ -23,6 +35,8 @@ struct Frame {
   int length = 0;        // L-SIG length (bytes)
   double dur_us = 0;     // airtime from L-SIG (covers the whole PPDU, also HT/VHT)
   float snr_db = 0;      // from the two LTF copies
+  double cfo_hz = 0;     // the sender's carrier against this receiver's tuning (both crystals' errors)
+  Points pts;            // with Decoder::keep_points
   // 6 Mb/s legacy frames (beacons, ACKs, RTS/CTS, ...) are decoded whole; with a good CRC their MAC
   // header is read (only addresses and, for beacons and probe responses, the network's name and
   // channel: payloads are not kept)
@@ -42,6 +56,9 @@ class Decoder {
 public:
   // fs: 20 or 40 MS/s (anything else finds nothing); centre_hz: the samples' centre frequency.
   void reset(double fs, double centre_hz);
+  // Also keep each frame's equalised subcarriers (Frame::pts); a legacy frame is then reported once
+  // its first payload symbols have arrived (one still arriving at reset() is not reported).
+  void keep_points(bool on) { _points = on; }
   // Contiguous samples, in order; t_end: the time (s) just after the last one. Frames found are
   // appended to `out` (a frame is reported once its header has arrived).
   void feed(const cf *x, size_t n, double t_end, std::vector<Frame> &out);
@@ -50,7 +67,8 @@ public:
   // One 20 MS/s snippet starting 2 us before the detector's plateau: decode its header (tests). f.t is
   // set to the frame's start relative to where it was expected (seconds).
   // payload: also decode a 6 Mb/s legacy frame whole when the snippet holds all of it.
-  static bool decode20(const cf *x, size_t n, Frame &f, bool payload = false);
+  // points: fill f.pts with what the snippet holds.
+  static bool decode20(const cf *x, size_t n, Frame &f, bool payload = false, bool points = false);
 
 private:
   void scan(std::vector<Frame> &out);
@@ -62,7 +80,9 @@ private:
     uint64_t pos, end; // where its snippet starts (absolute), the sample after the frame
     double off;        // its channel's offset from the centre
     Frame f;
+    bool whole = true; // decode it whole (a 6 Mb/s frame); else only its points
   };
+  bool _points = false;
   std::vector<Pending> _pend;
   // 802.11b (2.4 GHz): x[k] * conj(x[k + 1 us]) of a DSSS signal is the same Barker waveform times
   // a phase step of 0/90/180/270 degrees, so (summed over a few samples, as a unit phasor) its 4th

@@ -98,6 +98,8 @@ export class Display {
   private wifiPending: Mark[] = [];
   private wifiKept: { f: Mark; row: number }[] = [];
   private wifiNames = new Map<string, string>(); // BSSID -> network name, from the beacons seen here
+  private wifiIds = new WeakMap<Mark, number>(); // the backend's frame ids (its "points" command)
+  private keptFrom = 0;                          // the oldest id whose points the backend still keeps
   private hover: number | null = null; // CSS x
   private hoverWfY = -1;               // CSS y over the waterfall (-1: over the spectrum)
   private sepRows = -1;                // rows since the newest span separator (older rows: another span)
@@ -120,6 +122,7 @@ export class Display {
     overlay: null, staleText: 'No data from the adapter', dim: false, stitch: null, wifi: false,
   };
   onRetune: (freq: number) => void = () => {};
+  onFrame: (id: number) => void = () => {}; // a Wi-Fi mark clicked: that frame's id
 
   constructor(sp: HTMLCanvasElement, wf: HTMLCanvasElement) {
     this.sp = sp;
@@ -149,7 +152,19 @@ export class Display {
       const f = this.freqAt(e.offsetX);
       if (f !== null) this.onRetune(f); // the app snaps it to the radio's tuning steps
     });
-    on(wf, 'dblclick', () => this.onHint('Double-click the spectrum (top plot) to tune.'));
+    // a Wi-Fi mark clicked: the inspector shows that frame's constellation
+    const markAt = (e: MouseEvent) => {
+      const f = this.freqAt(e.offsetX), wy = e.offsetY * this.dpr;
+      if (f === null || (this.sepRows >= 0 && wy > this.sepRows)) return null; // older rows: another span
+      return this.frameAt(f, Math.round(wy));
+    };
+    on(wf, 'dblclick', (e) => {
+      if (markAt(e) === null) this.onHint('Double-click the spectrum (top plot) to tune.');
+    });
+    on(wf, 'click', (e) => {
+      const id = e.detail > 1 ? null : markAt(e); // (the second click of a double-click: already asked)
+      if (id !== null) this.onFrame(id);
+    });
     let wasStale = false;
     const loop = () => {
       const stale = this.isStale();
@@ -637,8 +652,10 @@ export class Display {
 
   // Wi-Fi frames found in this view's samples: each on the row whose time covers its start (frames come
   // a little after their rows, so most land a few rows down)
-  addWifi(frames: WifiFrame[], other: OtherSignal[] = []) {
+  addWifi(frames: WifiFrame[], other: OtherSignal[] = [], id0?: number, kept0?: number) {
     if (!this.opts.wifi || this.opts.stitch || this.opts.dim) return; // (stopped: the picture is kept as it was)
+    if (id0 !== undefined) frames.forEach((f, i) => this.wifiIds.set(f, id0 + i));
+    if (kept0 !== undefined) this.keptFrom = kept0;
     // (a BLE advertiser's address and name ride where a Wi-Fi frame's sender and network name do)
     const marks: Mark[] = [
       ...frames,
@@ -689,6 +706,20 @@ export class Display {
       this.wifiKept = this.wifiKept.filter((k) => k.row >= this.rowNo - this.wf.height); // off the picture
   }
 
+  // The Wi-Fi frame under the pointer with an id (one whose points are kept first, then the nearest row,
+  // then the nearest channel centre)
+  private frameAt(f: number, rowsAgo: number): number | null {
+    const row = this.rowNo - rowsAgo;
+    let best: { id: number; d: number } | null = null;
+    for (const k of this.wifiKept) {
+      const id = this.wifiIds.get(k.f), dr = Math.abs(k.row - row), df = Math.abs(f - k.f[1] * 1e6);
+      if (id === undefined || dr > 2 || df > (k.f[2] / 2) * 1e6) continue;
+      const d = (id < this.keptFrom ? 1e12 : 0) + dr * 1e8 + df;
+      if (!best || d < best.d) best = { id, d };
+    }
+    return best ? best.id : null;
+  }
+
   // The Wi-Fi frames and other signals under the pointer: on that row (+-2) and covering that frequency
   private wifiAt(f: number, rowsAgo: number): string | null {
     const row = this.rowNo - rowsAgo;
@@ -713,7 +744,7 @@ export class Display {
     const from: Record<string, number> = {};
     for (const k of hit) if (k.f[8]) from[this.wifiNames.get(k.f[8]) ?? k.f[8]] = (from[this.wifiNames.get(k.f[8]) ?? k.f[8]] ?? 0) + 1;
     const who = Object.entries(from).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k]) => k);
-    return `Wi-Fi ${ch}: ${hit.length} frame${hit.length > 1 ? 's' : ''} (${kinds})${rate} · SNR ${snr[snr.length >> 1].toFixed(0)} dB${who.length ? ` · from ${who.join(', ')}` : ''}${other ? ` · ${other}` : ''}`;
+    return `Wi-Fi ${ch}: ${hit.length} frame${hit.length > 1 ? 's' : ''} (${kinds})${rate} · SNR ${snr[snr.length >> 1].toFixed(0)} dB${who.length ? ` · from ${who.join(', ')}` : ''}${other ? ` · ${other}` : ''}${hit.some((k) => (this.wifiIds.get(k.f) ?? -1) >= this.keptFrom) ? ' · click: its constellation' : ''}`;
   }
 
   // e.g. "Bluetooth 3, narrowband 1 · 2426 MHz · 366 µs"

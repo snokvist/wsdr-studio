@@ -140,7 +140,14 @@ The window needs at least 1280 × 720.
   whole when the signal allows: the band
   ruler then names the networks heard on each channel (from their beacons), and the hover names who
   sent the frames under the pointer (other devices' addresses too, often randomised ones). Only
-  addresses and network names are read; no payload is kept, nothing is saved.
+  addresses and network names are read; no payload is decoded, nothing is saved.
+- **Frame inspector** (click a Wi-Fi mark): that frame's equalised subcarriers as a constellation:
+  L-SIG, the HT/VHT signal field, and a legacy frame's first 32 payload symbols, with the EVM, the SNR
+  and the sender's carrier offset (kHz, ppm; both crystals' errors), plus the sender and network when
+  the frame was decoded whole. EVM counts the sender, the path and this receiver: a strong sender at a
+  high fixed gain overloads the adapter (lower the gain). The backend keeps the latest few thousand
+  frames' points in memory only (a mark older than that answers "no longer kept"); they are
+  constellation points, not decoded bytes, and are never saved. HT/VHT payloads are not shown yet.
   Other signals get an aquamarine mark, named in the hover: narrow bursts (up to 2.5 MHz) are
   "Bluetooth" when they hop between frequencies and "narrowband" otherwise (wireless mice and
   keyboards, ...), and a microwave oven is recognised by the span switching on and off with the mains.

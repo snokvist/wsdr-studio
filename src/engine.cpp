@@ -218,6 +218,11 @@ json Engine::run(const json &c) {
       _cb.event(caps()); // the spans' captured rates (hw_fs) changed
     return {};
   }
+  if (cmd == "points") { // one frame's equalised points (the frame inspector)
+    if (!c.contains("frame") || !c["frame"].is_number_unsigned())
+      throw CmdError("bad_request", "frame must be a frame id");
+    return points(c["frame"].get<uint64_t>());
+  }
   if (cmd == "dsp") {
     DspConfig n;
     {
@@ -653,14 +658,52 @@ json Engine::devices_json(const std::vector<DeviceInfo> &d) {
   return {{"type", "devices"}, {"devices", arr}};
 }
 
+// A kept frame and its points: {"frame", "t", "mhz", "bw", "fmt", "rate", "len", "snr", "cfo_hz",
+// "cfo_ppm" (against the channel's frequency), "evm_lsig_db", "evm_db" (payload; null: none), "bits"
+// (payload bits per subcarrier, 0 none), "n_lsig", "n_sig2" (then the payload's), "scale" (unit
+// power), "z": [I, Q, I, Q, ...] as integers; a 6 Mb/s frame decoded whole adds "ta" (its sender) and
+// a beacon "ssid"}.
+json Engine::points(uint64_t id) {
+  std::lock_guard<std::mutex> l(_km);
+  const auto it = std::lower_bound(_kept.begin(), _kept.end(), id, [](const auto &k, uint64_t v) { return k.first < v; });
+  if (it == _kept.end() || it->first != id)
+    throw CmdError("gone", "that frame is no longer kept");
+  const wifi::Frame &f = it->second;
+  const wifi::Points &P = f.pts;
+  std::vector<int> z;
+  z.reserve(2 * P.z.size());
+  for (const auto &v : P.z) {
+    z.push_back(v.real());
+    z.push_back(v.imag());
+  }
+  const auto r1 = [](double v) { return std::round(v * 10) / 10; };
+  json who = json::object();
+  if (f.mac && f.has_ta) {
+    char b[18];
+    std::snprintf(b, sizeof b, "%02x:%02x:%02x:%02x:%02x:%02x", f.ta[0], f.ta[1], f.ta[2], f.ta[3], f.ta[4], f.ta[5]);
+    who["ta"] = b;
+  }
+  if (f.beacon)
+    who["ssid"] = f.ssid;
+  json j = {{"frame", id}, {"t", f.t}, {"mhz", f.centre_hz / 1e6}, {"bw", f.bw_mhz}, {"fmt", std::string(1, f.fmt)},
+          {"rate", f.rate_mbps}, {"len", f.length}, {"snr", r1(f.snr_db)}, {"cfo_hz", std::round(f.cfo_hz)},
+          {"cfo_ppm", std::round(f.cfo_hz / f.centre_hz * 1e8) / 100}, {"evm_lsig_db", r1(P.evm_lsig_db)},
+          {"evm_db", P.bits ? json(r1(P.evm_db)) : json(nullptr)}, {"bits", P.bits}, {"n_lsig", P.n_lsig},
+          {"n_sig2", P.n_sig2}, {"scale", wifi::kPointScale}, {"z", z}};
+  j.update(who);
+  return j;
+}
+
 // Wi-Fi frames from the samples the DSP thread hands over: found frames go out in batches as
 // {"type":"wifi","frames":[[t, centre MHz, width MHz, format, rate Mb/s, length, airtime us, SNR dB
 // (, sender, BSSID, network name, channel: 6 Mb/s frames decoded whole)]...],
 // "other":[[t, centre MHz, width MHz, kind (T Bluetooth, N narrowband, M microwave oven, E BLE
 // advertising, C steady carrier), us (, E: address, random, name; C: null, null, null, comb kHz)]...],
-// "dropped": banks skipped because this thread fell behind}.
+// "dropped": banks skipped because this thread fell behind, "id0": the first frame's id (the others
+// count on; see points()), "kept0": the oldest frame whose points are still kept}.
 void Engine::wifi_loop() {
   wifi::Decoder dec;
+  dec.keep_points(true); // for the frame inspector (points())
   sig::Finder sf; // other signals in the same samples (Bluetooth, narrowband, a microwave oven)
   std::vector<sig::Burst> other;
   uint32_t gen = ~0u;
@@ -730,7 +773,22 @@ void Engine::wifi_loop() {
         oth.push_back(e);
       }
       try {
-        _cb.event({{"type", "wifi"}, {"frames", arr}, {"other", oth}, {"dropped", d}});
+        uint64_t id0, kept0;
+        {
+          std::lock_guard<std::mutex> l(_km);
+          const auto cost = [](const wifi::Frame &f) { return std::max(f.pts.z.size(), kKeptMin); };
+          id0 = _next_frame;
+          for (auto &f : found) {
+            _kept_points += cost(f);
+            _kept.emplace_back(_next_frame++, std::move(f));
+          }
+          while (_kept_points > kKeptPoints && !_kept.empty()) {
+            _kept_points -= cost(_kept.front().second);
+            _kept.pop_front();
+          }
+          kept0 = _kept.empty() ? _next_frame : _kept.front().first;
+        }
+        _cb.event({{"type", "wifi"}, {"frames", arr}, {"other", oth}, {"dropped", d}, {"id0", id0}, {"kept0", kept0}});
       } catch (const std::exception &) {
         // a frame's text the JSON writer refused: this batch is lost, the thread goes on
       }

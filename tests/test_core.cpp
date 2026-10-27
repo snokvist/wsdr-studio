@@ -320,7 +320,14 @@ static void test_crop() {
 // An 802.11a PPDU header (STF, LTF, L-SIG, then `extra` symbols) synthesised directly at 40 MS/s on
 // the 20 MHz channel `off_hz` from the centre (+-10 MHz: the 312.5 kHz subcarriers land on bins of a
 // 128-point IFFT). ht: the two symbols after L-SIG are QBPSK (HT-SIG), else BPSK.
-static std::vector<std::complex<float>> ofdm_frame(int rate_code, int length, double off_hz, bool ht, int extra, std::mt19937 &rng) {
+// The pilot polarity sequence p_0..p_126 (802.11 17.3.5.10)
+static const int kPolT[127] = {1, 1, 1, 1, -1, -1, -1, 1, -1, -1, -1, -1, 1, 1, -1, 1, -1, -1, 1, 1, -1, 1, 1, -1, 1, 1, 1, 1, 1, 1, -1, 1, 1, 1, -1, 1, 1, -1, -1, 1, 1, 1, -1, 1, -1, -1, -1, 1, -1, 1, -1, -1, 1, -1, -1, 1, 1, 1, 1, 1, -1, -1, 1, 1, -1, -1, 1, -1, 1, -1, 1, 1, -1, -1, -1, 1, 1, -1, -1, -1, -1, 1, -1, -1, 1, -1, 1, 1, 1, 1, -1, 1, -1, 1, -1, 1, -1, -1, -1, -1, -1, 1, -1, 1, 1, -1, 1, -1, 1, 1, 1, -1, -1, 1, -1, -1, -1, 1, 1, 1, -1, -1, -1, -1, -1, -1, -1};
+
+// `extra` data symbols follow L-SIG: random BPSK (the first two rotated to QBPSK when ht), or with
+// qam_bits 2/4/6 random QPSK/16-QAM/64-QAM points at 802.11's scale (unit mean power), appended to
+// *sent (48 a symbol, by subcarrier from -26 up) when given.
+static std::vector<std::complex<float>> ofdm_frame(int rate_code, int length, double off_hz, bool ht, int extra, std::mt19937 &rng,
+                                                   int qam_bits = 1, std::vector<std::complex<float>> *sent = nullptr) {
   using C = std::complex<float>;
   const int shift = static_cast<int>(std::lround(off_hz / 312.5e3));
   auto sym = [&](const std::array<C, 64> &sc, int cp) { // sc by subcarrier -32..31 (index s + 32)
@@ -379,25 +386,32 @@ static std::vector<std::complex<float>> ofdm_frame(int rate_code, int length, do
   for (int s = -26; s <= 26; s++)
     if (s != 0 && s != -21 && s != -7 && s != 7 && s != 21)
       dsc.push_back(s);
-  const int pol[3] = {1, 1, 1};
-  auto data_sym = [&](const int *cb, int p, C rot) {
+  const int top = qam_bits == 2 ? 1 : qam_bits == 4 ? 3 : 7;
+  const float kmod = 1.f / std::sqrt(qam_bits == 2 ? 2.f : qam_bits == 4 ? 10.f : 42.f);
+  std::uniform_int_distribution<int> level(0, top);
+  auto data_sym = [&](const int *cb, int p, C rot, bool qam = false) {
     std::array<C, 64> sc{};
     for (int k = 0; k < 48; k++)
-      sc[dsc[3 * (k % 16) + k / 16] + 32] = rot * static_cast<float>(2 * cb[k] - 1);
+      sc[dsc[3 * (k % 16) + k / 16] + 32] =
+          qam ? C(static_cast<float>(2 * level(rng) - top), static_cast<float>(2 * level(rng) - top)) * kmod
+              : rot * static_cast<float>(2 * cb[k] - 1);
+    if (qam && sent)
+      for (int s : dsc)
+        sent->push_back(sc[s + 32]);
     const int ps[4] = {-21, -7, 7, 21}, pv[4] = {1, 1, 1, -1};
     for (int i = 0; i < 4; i++)
       sc[ps[i] + 32] = static_cast<float>(pv[i] * p);
     return sym(sc, 32);
   };
-  auto sg = data_sym(coded, pol[0], 1);
+  auto sg = data_sym(coded, kPolT[0], 1);
   x.insert(x.end(), sg.begin(), sg.end());
   std::uniform_int_distribution<int> bit(0, 1);
   for (int e = 0; e < extra; e++) {
     int cb[48];
     for (int &b : cb)
       b = bit(rng);
-    const int p = e < 2 ? pol[e + 1] : 1;
-    auto d = data_sym(cb, p, ht && e < 2 ? C(0, 1) : C(1, 0));
+    const int p = kPolT[(e + 1) % 127];
+    auto d = data_sym(cb, p, ht && e < 2 ? C(0, 1) : C(1, 0), qam_bits > 1 && !ht);
     x.insert(x.end(), d.begin(), d.end());
   }
   return x;
@@ -451,6 +465,82 @@ static void test_wifi_frames() {
     CHECK(f.snr_db > 15);
     if (w.len == 14)
       CHECK(std::abs(f.dur_us - (20 + 4 * 6)) < 1e-9); // an ACK at 6 Mb/s: 44 us
+  }
+}
+
+// The equalised points behind each frame (Decoder::keep_points): L-SIG on BPSK, HT-SIG on QBPSK, a
+// 54 Mb/s payload on 64-QAM at unit power, EVM near the SNR, and the carrier offset.
+static void test_wifi_points() {
+  std::mt19937 rng(11);
+  std::normal_distribution<float> g(0, 1);
+  const double fs = 40e6, centre = 5190e6, cfo = 60e3;
+  wifi::Decoder dec;
+  dec.reset(fs, centre);
+  dec.keep_points(true);
+  std::vector<std::complex<float>> x;
+  auto noise = [&](size_t n) {
+    for (size_t i = 0; i < n; i++)
+      x.emplace_back(0.05f * g(rng), 0.05f * g(rng));
+  };
+  // 54 Mb/s (code 0b0011), 300 bytes: 12 payload symbols; an HT frame; a 6 Mb/s ACK (6 symbols)
+  struct Want { int code, len, bits, nsym; bool ht; };
+  std::vector<std::complex<float>> sent; // the 54 Mb/s frame's payload points
+  const std::vector<Want> want = {{0b0011, 300, 6, 12, false}, {0b1101, 1500, 0, 0, true}, {0b1101, 14, 1, 6, false}};
+  noise(30000);
+  for (const auto &w : want) {
+    auto f = ofdm_frame(w.code, w.len, 10e6, w.ht, w.ht ? 6 : w.nsym, rng, w.bits > 1 ? w.bits : 1, &sent);
+    for (size_t i = 0; i < f.size(); i++)
+      x.push_back(f[i] * std::polar(1.f, static_cast<float>(2 * M_PI * cfo * static_cast<double>(i) / fs)) * 8.9f +
+                  std::complex<float>(0.05f * g(rng), 0.05f * g(rng))); // ~17 dB SNR, as above
+    noise(20000);
+  }
+  std::vector<wifi::Frame> got;
+  for (size_t i = 0; i < x.size(); i += 8192) {
+    const size_t n = std::min<size_t>(8192, x.size() - i);
+    dec.feed(&x[i], n, static_cast<double>(i + n) / fs, got);
+  }
+  std::sort(got.begin(), got.end(), [](const wifi::Frame &a, const wifi::Frame &b) { return a.t < b.t; });
+  CHECK(got.size() == want.size());
+  for (size_t i = 0; i < std::min(got.size(), want.size()); i++) {
+    const auto &f = got[i];
+    const auto &w = want[i];
+    const auto &P = f.pts;
+    const float s = wifi::kPointScale;
+    if (getenv("DUMP"))
+      std::printf("  %c rate %d cfo %.0f Hz points %zu lsig %u sig2 %u bits %u evm L-SIG %.1f payload %.1f dB\n", f.fmt, f.rate_mbps,
+                  f.cfo_hz, P.z.size(), P.n_lsig, P.n_sig2, P.bits, P.evm_lsig_db, P.evm_db);
+    CHECK(std::abs(f.cfo_hz - cfo) < 2e3);
+    CHECK(P.n_lsig == 48 && P.evm_lsig_db < -12);
+    double re = 0, im = 0;
+    for (size_t k = 0; k < 48 && k < P.z.size(); k++) { // L-SIG: BPSK on the real axis
+      re += std::abs(P.z[k].real()) / s;
+      im += std::abs(P.z[k].imag()) / s;
+    }
+    CHECK(re > 40 && im < 0.3 * re);
+    if (w.ht) {
+      CHECK(P.n_sig2 == 96 && P.bits == 0 && P.z.size() == 48 + 96);
+      re = im = 0;
+      for (size_t k = 48; k < P.z.size(); k++) { // HT-SIG: QBPSK, on the imaginary axis
+        re += std::abs(P.z[k].real());
+        im += std::abs(P.z[k].imag());
+      }
+      CHECK(im > 3 * re);
+    } else {
+      CHECK(P.n_sig2 == 0 && P.bits == w.bits);
+      CHECK(P.z.size() == 48 + 48 * static_cast<size_t>(w.nsym));
+      CHECK(P.evm_db < -16); // ~-19 at this SNR (a wrong K_MOD in the slicer reads ~-12)
+      if (w.bits == 6) { // each point near the one sent: sign and scale (pilot polarity, K_MOD, equalisation)
+        double e = 0;
+        for (size_t k = 0; k < sent.size() && 48 + k < P.z.size(); k++)
+          e += std::norm(std::complex<float>(P.z[48 + k].real(), P.z[48 + k].imag()) / s - sent[k]);
+        CHECK(sent.size() == P.z.size() - 48 && e / static_cast<double>(sent.size()) < 0.05);
+      }
+      double pw = 0; // the payload at unit mean power: equalised, and on 802.11's scale
+      for (size_t k = 48; k < P.z.size(); k++)
+        pw += std::norm(std::complex<double>(P.z[k].real(), P.z[k].imag()) / static_cast<double>(s));
+      pw /= static_cast<double>(P.z.size() - 48);
+      CHECK(std::abs(10 * std::log10(pw)) < 0.5);
+    }
   }
 }
 
@@ -1004,6 +1094,7 @@ int main(int argc, char **argv) {
   test_gapped();
   test_crop();
   test_wifi_frames();
+  test_wifi_points();
   test_ssid_text();
   test_dsss_beacon();
   test_signals();

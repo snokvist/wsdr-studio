@@ -312,3 +312,19 @@ button.rtab.s1 { background: var(--view-b); }
 /* the band ruler: a network heard on a channel takes the place of its MHz */
 button.rcell > span { max-width: 100%; }
 .rcell small.rnet { display: block; color: #eef2f6; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 3px; box-sizing: border-box; }
+
+/* the frame inspector (a clicked Wi-Fi mark): over the plots' top right; not in Panorama (no waterfall) */
+.inspector {
+  position: absolute; right: 12px; top: 12px; z-index: 5; width: 300px; max-height: calc(100% - 24px); overflow: auto;
+  display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px #0008;
+}
+.inspector header { display: flex; align-items: center; justify-content: space-between; }
+.inspector button.x { background: transparent; border-color: transparent; font-size: 16px; line-height: 1; }
+.mode-panorama .view .inspector { display: none; }
+.inspector canvas.iq { width: 100%; aspect-ratio: 1; border: 1px solid var(--line); border-radius: 4px; }
+.inspector .legend { display: flex; flex-wrap: wrap; gap: 4px; }
+.inspector .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.inspector dl.kv { margin: 0; font-size: 12px; }
+.inspector dl.kv dt { margin: 0; }
+.inspector dl.kv dd { margin: 0; color: var(--text); font-family: var(--mono); font-size: 11.5px; }

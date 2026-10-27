@@ -27,6 +27,7 @@
 #include "receiver.h"
 #include "recorder.h"
 #include "ring.h"
+#include "wifi.h"
 
 namespace studio {
 
@@ -140,6 +141,15 @@ private:
   bool _wquit = false;
   std::atomic<bool> _wifi_on{false};
   std::atomic<uint64_t> _wifi_dropped{0};
+  // The latest frames with their equalised points, for the frame inspector ("points"): a frame's id
+  // counts the frames this engine reported ("wifi" events carry their first frame's as "id0")
+  static constexpr size_t kKeptPoints = 4'000'000; // ~16 MB: some thousands of frames
+  static constexpr size_t kKeptMin = 64;            // what a frame without points (802.11b) counts
+  std::mutex _km;
+  std::deque<std::pair<uint64_t, wifi::Frame>> _kept;
+  size_t _kept_points = 0;
+  uint64_t _next_frame = 0;
+  json points(uint64_t id);
 
   mutable std::mutex _dm; // DSP settings handoff (command thread -> DSP thread)
   DspConfig _dsp_cfg;

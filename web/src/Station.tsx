@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // One adapter's view (slot 0 = A, 1 = B): its header (frequency, Start/Stop, Record), its spectrum and
 // waterfall, and, while it is the selected view, its sidebar sections (adapter, tuning, gain).
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { channelAt } from './channels';
 import { Display, type Source } from './display';
 import type { Hub } from './hub';
-import type { Caps, Device, DspSettings, Rate, RxSettings, Row, Status, WifiFrame } from './protocol';
+import { Constellation } from './Constellation';
+import type { Caps, Device, DspSettings, FramePoints, Rate, RxSettings, Row, Status, WifiFrame } from './protocol';
 import { Seg } from './ui';
 import {
   ANT_COLOUR, LOCKED, SLOT_NAME, UDEV_CMD, isDual, VIEW_COLOUR, bandOf, baseName, bytes, chanShort, devKey, devLabel, devTitle, fmtClock,
@@ -110,6 +111,9 @@ export function Station(p: {
   // not shown, its count since Start would stay forever)
   const [recentFaults, setRecentFaults] = useState(0);
   const [wifiSkipped, setWifiSkipped] = useState(0); // when the Wi-Fi finder last fell behind (ms)
+  // the frame inspector: a clicked Wi-Fi mark's frame and, once the backend answered, its points
+  const [inspect, setInspect] = useState<{ id: number; data: FramePoints | null; error: string | null } | null>(null);
+  const closeInspect = useCallback(() => setInspect(null), []);
   const wantWifiRef = useRef(false); // (for the event handler: this window wants Wi-Fi frames found)
   const [hadPicture, setHadPicture] = useState(false);
   // unplugged while running: the adapter (pid, picker key) to start again when it is back
@@ -162,6 +166,13 @@ export function Station(p: {
       }
     };
     d.onHint = (t) => addBanner(t);
+    d.onFrame = (id) => {
+      setInspect({ id, data: null, error: null });
+      hub
+        .request('points', { slot, frame: id })
+        .then((r: FramePoints) => setInspect((s) => (s?.id === id ? { id, data: r, error: null } : s)))
+        .catch((e: Error) => setInspect((s) => (s?.id === id ? { id, data: null, error: e.message } : s)));
+    };
     let wasOpen = false;
     let opened: { pid: number; key: string } | null = null; // the adapter of the current run
     let lastRx: RxSettings | null = null;
@@ -313,7 +324,7 @@ export function Station(p: {
             addBanner(String(e.text ?? ''));
             break;
           case 'wifi':
-            d.addWifi(e.frames, e.other ?? []);
+            d.addWifi(e.frames, e.other ?? [], e.id0, e.kept0);
             link.wifi(e.frames);
             if (wifiDropped >= 0 && e.dropped > wifiDropped) setWifiSkipped(Date.now()); // the backend fell behind: some samples not searched
             wifiDropped = e.dropped;
@@ -979,6 +990,7 @@ export function Station(p: {
         </div>
         <canvas ref={spRef} className="spectrum" />
         <canvas ref={wfRef} className="waterfall" />
+        {inspect && <Constellation data={inspect.data} error={inspect.error} onClose={closeInspect} />}
       </main>
 
       {(warn.length > 0 || (!prefs.retuned && open && !recording) || (recording && secsLeft < 60)) && (
