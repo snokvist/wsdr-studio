@@ -26,6 +26,22 @@ dongles it shows two views side by side on one axis (Panorama) or stacked on the
 - **Receive only.** The app never transmits.
 - **Platform:** Linux, x86-64, glibc ≥ 2.34 (Ubuntu 22.04 or newer and similar).
 
+## Screenshots
+
+**Single:** one 8812BU at 40 MHz on 2.4 GHz ch 6, Mark signals on. Wi-Fi frames are marked on the
+waterfall, and the band ruler's bars show the strongest signal per channel.
+
+![Single view on 2.4 GHz](docs/screenshots/single.webp)
+
+**Panorama:** an 8812CU (A, gapped) and an 8812BU (B) side by side, 80 MHz across UNII-1. The
+shaded slot at A's centre is the 8812CU's own notch.
+
+![Panorama across UNII-1](docs/screenshots/panorama.webp)
+
+**Spectral Map:** one 8812BU sweeps all of 5 GHz, ch 68–96 included, one row per sweep.
+
+![Spectral Map of 5 GHz](docs/screenshots/map.webp)
+
 ## Quick start
 
 1. **Download** `wsdr-studio-x86_64.AppImage` from the
