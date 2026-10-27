@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "dsp.h"
+#include "stream_cu.h" // la_i/la_q, path_b_i/path_b_q
 
 #include <fftw3.h>
 
@@ -15,11 +16,6 @@ std::mutex &fftw_plan_mutex() {
   static std::mutex m;
   return m;
 }
-
-namespace {
-
-int sext12(uint32_t v) { return static_cast<int>(static_cast<int32_t>(v << 20) >> 20); }
-} // namespace
 
 struct Spectrum::Path {
   int index = 0;
@@ -110,16 +106,14 @@ void Spectrum::reset(const wsdr::BankMeta &m) {
   }
 }
 
-void Spectrum::unpack(const uint8_t *bank, size_t samples, int path, wsdr::cf *out) {
+void Spectrum::unpack(const uint8_t *bank, size_t samples, int path, bool cu, wsdr::cf *out) {
   for (size_t i = 0; i < samples; i++) {
     uint64_t w;
     std::memcpy(&w, bank + 8 * i, 8);
     if (path == 0)
-      out[i] = wsdr::cf(static_cast<float>(sext12(static_cast<uint32_t>(w & 0xFFF))),
-                        static_cast<float>(sext12(static_cast<uint32_t>((w >> 12) & 0xFFF))));
+      out[i] = wsdr::cf(static_cast<float>(wsdr::la_i(w)), static_cast<float>(wsdr::la_q(w)));
     else
-      out[i] = wsdr::cf(static_cast<float>(sext12(static_cast<uint32_t>((w >> 44) & 0xFFF))),
-                        static_cast<float>(sext12(static_cast<uint32_t>((w >> 32) & 0xFFF))));
+      out[i] = wsdr::cf(static_cast<float>(wsdr::path_b_i(w, cu)), static_cast<float>(wsdr::path_b_q(w, cu)));
   }
 }
 
@@ -135,7 +129,7 @@ void Spectrum::process(const uint8_t *bank, size_t bytes, const wsdr::BankMeta &
     Path &p = *pp;
     if (p.index == 1 && meta.paths < 2)
       continue; // no path B on this chip
-    unpack(bank, ns, p.index, _tmp.data());
+    unpack(bank, ns, p.index, meta.cu, _tmp.data());
     if (_c.dc_remove)
       p.dc.process(_tmp.data(), ns);
     size_t i = 0;

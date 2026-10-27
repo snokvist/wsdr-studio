@@ -21,7 +21,8 @@ dongles it shows two views side by side on one axis (Panorama) or stacked on the
     8812BU dips at its centre at 40 MHz on 2.4 GHz; both are shaded and labelled. On the 8812CU,
     "Avoid the chip's centre notch" (off by default) cuts the 10 and 20 MHz views from a 40 MHz
     capture tuned beside them, so the notch sits outside the channel.
-  - 8812CU: two coherent antennas (A, B, or both overlaid).
+  - Both adapters: two antennas (A, B, or both overlaid). The 8812BU's are coherent at 20 and 40 MHz
+    spans; at its narrower spans the chip only drops samples, so there they are two separate views.
   - Fixed gain or the chip's AGC, and raw IQ recording (SigMF).
 - **Receive only.** The app never transmits.
 - **Platform:** Linux, x86-64, glibc ≥ 2.34 (Ubuntu 22.04 or newer and similar).

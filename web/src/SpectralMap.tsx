@@ -58,7 +58,7 @@ export function SpectralMap(p: {
         row: (r) => {
           const s = st.current;
           if (r.gen !== s.gen) s.inGen = [0, 0];
-          s.inGen[r.path & 1]++; // rows of the run per antenna (an 8812CU sends both)
+          s.inGen[r.path & 1]++; // rows of the run per antenna (both when both are shown)
           s.gen = r.gen;
           s.rowCentre = r.f0 + r.df * (r.bins / 2 - 0.5);
           const col = s.collect, pl = opts.current.plan, into = s.partial; // (Clear replaces the partial row: the step goes on into the new one)

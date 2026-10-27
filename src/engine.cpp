@@ -468,7 +468,7 @@ void Engine::open_adapter(uint16_t pid, const json &c) {
   {
     std::lock_guard<std::mutex> l(_dm);
     if (r->caps().paths < 2)
-      _dsp_cfg.paths = 1; // path B exists on the 8812CU only
+      _dsp_cfg.paths = 1; // an adapter with one path (both supported ones have two)
     _dsp_dirty = true;
   }
   set_view(s, r->settings());
@@ -804,7 +804,7 @@ void Engine::dsp_loop() {
           goto wifi_done;
         }
         w.x.resize(b->bytes / 8);
-        Spectrum::unpack(b->data.data(), w.x.size(), 0, w.x.data());
+        Spectrum::unpack(b->data.data(), w.x.size(), 0, b->meta.cu, w.x.data());
         w.t_end = now_s();
         w.fs = b->meta.fs;
         w.centre = b->meta.centre_hz;
@@ -835,7 +835,7 @@ void Engine::dsp_loop() {
         rec_next = b->meta.seq + 1;
         const int path = b->meta.paths > 1 ? _rec_path.load() : 0;
         const size_t ns = b->bytes / 8;
-        Spectrum::unpack(b->data.data(), ns, path, tmp.data());
+        Spectrum::unpack(b->data.data(), ns, path, b->meta.cu, tmp.data());
         for (size_t i = 0; i < ns; i++) {
           iq[2 * i] = static_cast<int16_t>(static_cast<int>(tmp[i].real()) * 16);
           iq[2 * i + 1] = static_cast<int16_t>(static_cast<int>(tmp[i].imag()) * 16);
