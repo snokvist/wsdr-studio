@@ -99,8 +99,9 @@ The window needs at least 1280 × 720.
 - **Each view's header**: ‹ frequency › (type a value, Enter), channel and span, a note when the
   radio centres elsewhere than asked ("requested … · tuned …"), Start / Stop and Rec.
 - **Band ruler** (above the plots): one range at a time (2.4 GHz, 5 GHz, or the 5 GHz sections
-  36–64, 100–144, 149–177), a cell per channel (click: tune there), a bracket per view; the bar under
-  a cell is the strongest signal seen on that channel this session.
+  36–80, 84–144, 149–177), a cell per channel (click: tune there), a bracket per view; the bar under
+  a cell is the strongest signal seen on that channel this session. Channels 68–96 (between UNII-2
+  and UNII-2e) are no Wi-Fi channels; their cells are hatched, and the radio receives there.
 - **Sidebar** (Ctrl+B): Editing A | B (two views), the view's adapter, span and gain (AGC), the links
   between A and B (frequency keeps their distance, span, gain), and the display settings.
 - **Spectral Map**: pick the range and how long each step is listened to (120 ms, 250 ms, 1 s) in

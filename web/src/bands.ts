@@ -1,26 +1,32 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // The channel axis shared by the band ruler and the spectral map: one range at a time (2.4 GHz, all
-// of 5 GHz, or a 5 GHz section), each channel equally wide, the gaps between the UNII groups (where
-// nothing is allowed) as short breaks.
+// of 5 GHz, or a 5 GHz section), each channel equally wide, the other gaps between the UNII groups as
+// short breaks. Channels 68-96 (between UNII-2 and UNII-2e) are no Wi-Fi channels but the radio
+// receives there, so they get cells too, marked as outside Wi-Fi.
 import type { Device } from './protocol';
-import { centre } from './survey';
+import { centre } from './channels';
 import { snap } from './util';
 
 export type Range = '2.4' | '5' | 'u12' | 'u2e' | 'u3';
-export type Group = { name: string; chans: number[]; half: number }; // half: a cell's half-width (Hz)
+// half: a cell's half-width (Hz); out: no Wi-Fi channels (receive only, nothing to join there)
+export type Group = { name: string; chans: number[]; half: number; out?: boolean };
 // A piece of the axis: frequencies f0..f1 drawn over units u0..u1 (one unit = one cell).
 type Piece = { f0: number; f1: number; u0: number; u1: number };
 const U1: Group = { name: 'UNII-1', chans: [36, 40, 44, 48], half: 10e6 };
 const U2: Group = { name: 'UNII-2', chans: [52, 56, 60, 64], half: 10e6 };
+// 68-96 split where the 5 GHz sections meet (5410 MHz), whole in the 5 GHz overview
+const OUT: Group = { name: 'Outside Wi-Fi', chans: [68, 72, 76, 80, 84, 88, 92, 96], half: 10e6, out: true };
+const OUT_LO: Group = { ...OUT, chans: OUT.chans.slice(0, 4) };
+const OUT_HI: Group = { ...OUT, chans: OUT.chans.slice(4) };
 const U2E: Group = { name: 'UNII-2e', chans: [100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144], half: 10e6 };
 const U3: Group = { name: 'UNII-3', chans: [149, 153, 157, 161, 165], half: 10e6 };
 const U59: Group = { name: '5.9 GHz', chans: [169, 173, 177], half: 10e6 };
 // edge: the frequencies the range covers (the radio tunes 2.4 GHz and 5080-6165 MHz)
 export const RANGES: Record<Range, { label: string; title: string; groups: Group[]; edge: [number, number] }> = {
   '2.4': { label: '2.4 GHz', title: 'Channels 1–13 (2400–2483.5 MHz)', groups: [{ name: '', chans: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13], half: 2.5e6 }], edge: [2400e6, 2490e6] },
-  '5': { label: '5 GHz', title: 'All 5 GHz channels', groups: [U1, U2, U2E, U3, U59], edge: [5080e6, 6165e6] },
-  u12: { label: '36–64', title: 'Channels 36–64: UNII-1 and UNII-2 (5150–5350 MHz)', groups: [U1, U2], edge: [5080e6, 5410e6] },
-  u2e: { label: '100–144', title: 'Channels 100–144: UNII-2e (5470–5730 MHz)', groups: [U2E], edge: [5410e6, 5732.5e6] },
+  '5': { label: '5 GHz', title: 'All 5 GHz channels', groups: [U1, U2, OUT, U2E, U3, U59], edge: [5080e6, 6165e6] },
+  u12: { label: '36–80', title: 'Channels 36–80: UNII-1, UNII-2 and 68–80 (5150–5410 MHz)', groups: [U1, U2, OUT_LO], edge: [5080e6, 5410e6] },
+  u2e: { label: '84–144', title: 'Channels 84–144: 84–96 and UNII-2e (5410–5730 MHz)', groups: [OUT_HI, U2E], edge: [5410e6, 5732.5e6] },
   u3: { label: '149–177', title: 'Channels 149–177: UNII-3 and 5.9 GHz (5735–5895 MHz)', groups: [U3, U59], edge: [5732.5e6, 6165e6] },
 };
 // the section a frequency is in (5 GHz: the one around it, not the whole band)

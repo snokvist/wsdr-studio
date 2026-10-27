@@ -3,10 +3,11 @@
 // follows the selected view), a cell per channel (click: tune the selected view there), a bracket per
 // view at the span it shows (its tab selects the view), and a survey bar: the strongest signal seen on
 // each channel this session. 5 GHz channels are equally wide, laid out by channel, not by MHz: the gaps
-// between the UNII groups (where nothing is allowed) shrink to short breaks.
+// between the UNII groups shrink to short breaks, except 68-96 (cells marked outside Wi-Fi).
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type WheelEvent } from 'react';
 import { AXES, RANGES, freqAt, pos, rangeOf, type Range } from './bands';
-import { centre, level, type Survey } from './survey';
+import { centre } from './channels';
+import { level, type Survey } from './survey';
 import { SLOT_NAME, VIEW_COLOUR, bandOf, mhz } from './util';
 
 const pc = (x: number) => `${(x * 100).toFixed(3)}%`;
@@ -135,12 +136,12 @@ export function BandRuler(p: {
             return (
               <button
                 key={c}
-                className="rcell"
+                className={g.out ? 'rcell out' : 'rcell'}
                 tabIndex={-1}
                 disabled={selLocked}
                 style={{ left: pc(a), width: pc(b - a) }}
-                aria-label={`Tune to channel ${c}`}
-                title={`Channel ${c} · ${mhz(centre(c), 0)} MHz${db !== undefined ? ` · strongest seen: ${db.toFixed(0)} dB over the noise` : ''}${
+                aria-label={`Tune to channel ${c}${g.out ? ', outside the Wi-Fi channels' : ''}`}
+                title={`Channel ${c} · ${mhz(centre(c), 0)} MHz${g.out ? ' · outside the Wi-Fi channels' : ''}${db !== undefined ? ` · strongest seen: ${db.toFixed(0)} dB over the noise` : ''}${
                   names ? ` · networks: ${names.join(', ')}` : ''
                 }`}
                 onClick={(e) => {
