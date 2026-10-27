@@ -12,7 +12,8 @@ dongles it shows two views side by side on one axis (Panorama) or stacked on the
 - **What you get:**
   - 8812BU on USB 3: spans of 2.5–40 MHz, and the full 40 MHz band at 40 MS/s. Also an 80 MHz span,
     gapped: one 8192-sample slice at 80 MS/s (~77 MHz at −6 dB), ~0.2 ms to ship it, ~33 % of the time
-    sampled. The chip's 80 MHz filter has a ~±2.5 dB ripple across the band.
+    sampled (an 8812BU left at USB 2 offers it too, ~6 %). The chip's 80 MHz filter has a ~±2.5 dB
+    ripple across the band.
   - 8812BU on USB 2, or the 8812CU: 2.5 and 5 MHz continuous (the 8812BU is normally switched to USB 3
     at Start, see below).
   - 8812CU (and an 8812BU left at USB 2), gapped: 10, 20 and 40 MHz spans listed as "gapped" in the Span list. The dongle captures
@@ -126,7 +127,7 @@ The window needs at least 1280 × 720.
 - **Spectral Map**: pick the range and how long each step is listened to (120 ms, 250 ms, 1 s) in
   the sidebar. Each channel is heard only while the sweep is on it; the header says how long of how
   often. A click on a channel leaves the map onto it; leaving puts both views back as they were.
-  "Gapped N MHz steps" (8812CU or USB 2: 40 MHz; 8812BU on USB 3: 80 MHz) takes fewer, wider steps:
+  "Gapped N MHz steps" (8812CU: 40 MHz; 8812BU: 80 MHz) takes fewer, wider steps:
   all of 5 GHz in 11 steps of 80 MHz (~3.2 s a sweep) instead of 21 of 40 MHz (~6 s), but only part
   of each listen is sampled.
 - **Mark signals** (Display, Single and Compare, 20 and 40 MHz spans): the app finds Wi-Fi frames in
@@ -141,13 +142,6 @@ The window needs at least 1280 × 720.
   ruler then names the networks heard on each channel (from their beacons), and the hover names who
   sent the frames under the pointer (other devices' addresses too, often randomised ones). Only
   addresses and network names are read; no payload is decoded, nothing is saved.
-- **Frame inspector** (click a Wi-Fi mark): that frame's equalised subcarriers as a constellation:
-  L-SIG, the HT/VHT signal field, and a legacy frame's first 32 payload symbols, with the EVM, the SNR
-  and the sender's carrier offset (kHz, ppm; both crystals' errors), plus the sender and network when
-  the frame was decoded whole. EVM counts the sender, the path and this receiver: a strong sender at a
-  high fixed gain overloads the adapter (lower the gain). The backend keeps the latest few thousand
-  frames' points in memory only (a mark older than that answers "no longer kept"); they are
-  constellation points, not decoded bytes, and are never saved. HT/VHT payloads are not shown yet.
   Other signals get an aquamarine mark, named in the hover: narrow bursts (up to 2.5 MHz) are
   "Bluetooth" when they hop between frequencies and "narrowband" otherwise (wireless mice and
   keyboards, ...), and a microwave oven is recognised by the span switching on and off with the mains.
@@ -159,6 +153,16 @@ The window needs at least 1280 × 720.
   harmonic (an HDMI/DisplayPort cable, a monitor or a GPU nearby: they show up as a ladder of such
   lines across 5 GHz). These are cheap rules, close enough to tag what the waterfall shows; signals at
   the very edge of the span are missed.
+- **Frame inspector** (click a Wi-Fi mark): that frame's equalised subcarriers as a constellation:
+  L-SIG, the HT/VHT signal field, and the payload's first 32 symbols, with the EVM, the SNR and the
+  sender's carrier offset (kHz, ppm; both crystals' errors), plus the sender and network when the
+  frame was decoded whole. 802.11n/ac frames show their MCS, streams, width and guard interval (from
+  their own signal field, CRC-checked); their payload is shown when they use one stream at 20 MHz
+  without STBC, equalised on their own HT/VHT training field, and otherwise the panel says why. EVM
+  counts the sender, the path and this receiver: a strong sender at a high fixed gain overloads the
+  adapter (lower the gain). The backend keeps the latest few thousand frames' points in memory only
+  (a mark older than that answers "no longer kept"); they are constellation points, not decoded
+  bytes, and are never saved.
 - **Adapter spurs**: weak steady lines at every multiple of 40 MHz, most likely from the dongle's own
   40 MHz crystal; the spectrum marks them "spur" (the hover says "likely adapter spur") so they are not
   taken for signals.

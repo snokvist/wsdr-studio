@@ -79,7 +79,7 @@ export type SweepPlan = { centres: number[]; rate_sel: number; fs: number; step:
 export function sweepPlan(range: Range, dev: Device | undefined, gappedOk: boolean): SweepPlan | null {
   if (!dev) return null;
   const cont = Math.min(40e6, dev.max_msps * 1e6), wide = (dev.gapped_msps ?? 0) * 1e6;
-  const fs = gappedOk && wide > cont ? wide : cont; // gapped: 40 MHz steps over USB 2, 80 on an 8812BU on USB 3
+  const fs = gappedOk && wide > cont ? wide : cont; // gapped: 40 MHz steps on an 8812CU, 80 on an 8812BU
   const step = Math.max(5e6, Math.floor((fs * 0.875) / 5e6) * 5e6);
   const stretches: [number, number][] = [];
   for (const g of RANGES[range].groups) {

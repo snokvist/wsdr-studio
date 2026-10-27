@@ -15,6 +15,9 @@ constexpr std::array<int, 53> kLtf = {1, 1, -1, -1, 1, 1, -1, 1, -1, 1, 1, 1, 1,
                                       1, -1, -1, 1, 1, -1, 1, -1, 1, -1, -1, -1, -1, -1, 1, 1, -1, -1, 1, -1, 1, -1, 1, 1, 1, 1};
 constexpr std::array<int, 4> kPilotSc = {-21, -7, 7, 21};
 constexpr std::array<int, 4> kPilotV = {1, 1, 1, -1};
+// HT / VHT (one stream, 20 MHz): the pilots rotate through these per symbol (802.11 19.3.11.10)
+constexpr std::array<int, 4> kPsi = {1, 1, 1, -1};
+// HT-LTF / VHT-LTF at 20 MHz: the L-LTF's 52 plus -28, -27 (+1) and 27, 28 (-1)
 constexpr std::array<int8_t, 127> kPol = {
     1, 1, 1, 1, -1, -1, -1, 1, -1, -1, -1, -1, 1, 1, -1, 1, -1, -1, 1, 1, -1, 1, 1, -1, 1, 1, 1, 1, 1, 1, -1, 1,
     1, 1, -1, 1, 1, -1, -1, 1, 1, 1, -1, 1, -1, -1, -1, 1, -1, 1, -1, -1, 1, -1, -1, 1, 1, 1, 1, 1, -1, -1, 1, 1,
@@ -27,6 +30,8 @@ struct Tables {
   std::array<float, 64> ltf_f{};  // by FFT bin
   std::array<cf, 64> ltf_t{};     // its time-domain symbol
   std::array<int, 48> data_sc{};  // data subcarriers, in order
+  std::array<float, 64> htltf_f{}; // by FFT bin
+  std::array<int, 52> data52{};   // HT / VHT data subcarriers (20 MHz), in order
   std::array<int, 48> perm{};     // coded bit k was sent on data subcarrier perm[k] (BPSK)
   // Viterbi, K = 7, g0 = 133, g1 = 171 (octal): for each state its two predecessors, their input bit
   // and the expected outputs as +-1
@@ -45,6 +50,13 @@ struct Tables {
     for (int s = -26; s <= 26; s++)
       if (s != 0 && s != -21 && s != -7 && s != 7 && s != 21)
         data_sc[j++] = s;
+    htltf_f = ltf_f;
+    htltf_f[bin(-28)] = htltf_f[bin(-27)] = 1;
+    htltf_f[bin(27)] = htltf_f[bin(28)] = -1;
+    j = 0;
+    for (int s = -28; s <= 28; s++)
+      if (s != 0 && s != -21 && s != -7 && s != 7 && s != 21)
+        data52[j++] = s;
     for (int k = 0; k < 48; k++)
       perm[k] = 3 * (k % 16) + k / 16;
     std::array<int, 64> cnt{};
@@ -89,8 +101,9 @@ void fft(cf *a, int n) {
   }
 }
 
-// Soft Viterbi (positive = bit 1): n output bits from 2n values.
-std::vector<uint8_t> viterbi(const std::vector<float> &llr) {
+// Soft Viterbi (positive = bit 1): n output bits from 2n values. zero_end: the coder ends in state 0
+// (its tail bits are known zeros), else from the best end state.
+std::vector<uint8_t> viterbi(const std::vector<float> &llr, bool zero_end = false) {
   const Tables &t = T();
   const size_t n = llr.size() / 2;
   std::array<float, 64> pm, nm;
@@ -108,7 +121,7 @@ std::vector<uint8_t> viterbi(const std::vector<float> &llr) {
     pm = nm;
   }
   // from the best end state (the tail bits should have brought it to 0: the caller checks them)
-  int s = static_cast<int>(std::max_element(pm.begin(), pm.end()) - pm.begin());
+  int s = zero_end ? 0 : static_cast<int>(std::max_element(pm.begin(), pm.end()) - pm.begin());
   std::vector<uint8_t> bits(n);
   for (size_t i = n; i-- > 0;) {
     const int c = dec[i][s];
@@ -118,8 +131,9 @@ std::vector<uint8_t> viterbi(const std::vector<float> &llr) {
   return bits;
 }
 
-// One 64-sample symbol: FFT, equalised by H, the pilots' phase (common and slope) removed.
-std::array<cf, 64> symbol(const cf *x, const std::array<cf, 64> &h, int polarity) {
+// One 64-sample symbol: FFT, equalised by H, the pilots' phase (common and slope) removed; pv: the
+// pilots' values at -21, -7, 7, 21.
+std::array<cf, 64> symbol(const cf *x, const std::array<cf, 64> &h, const std::array<int, 4> &pv) {
   std::array<cf, 64> z;
   std::copy(x, x + 64, z.begin());
   fft(z.data(), 64);
@@ -127,7 +141,7 @@ std::array<cf, 64> symbol(const cf *x, const std::array<cf, 64> &h, int polarity
     z[k] /= h[k];
   float ph[4];
   for (int i = 0; i < 4; i++)
-    ph[i] = std::arg(z[bin(kPilotSc[i])] * static_cast<float>(kPilotV[i] * polarity));
+    ph[i] = std::arg(z[bin(kPilotSc[i])] * static_cast<float>(pv[i]));
   for (int i = 1; i < 4; i++) { // unwrap along the subcarriers
     while (ph[i] - ph[i - 1] > kPi)
       ph[i] -= static_cast<float>(2 * kPi);
@@ -149,6 +163,67 @@ std::array<cf, 64> symbol(const cf *x, const std::array<cf, 64> &h, int polarity
   return z;
 }
 
+// A legacy symbol: the pilots 1, 1, 1, -1 times the polarity p_n.
+std::array<cf, 64> symbol(const cf *x, const std::array<cf, 64> &h, int polarity) {
+  return symbol(x, h, {kPilotV[0] * polarity, kPilotV[1] * polarity, kPilotV[2] * polarity, kPilotV[3] * polarity});
+}
+
+// An HT / VHT data symbol n (one stream): Psi rotated by n, times the polarity p_(n + z) (z: 3 HT, 4 VHT).
+std::array<int, 4> ht_pilots(int n, int z) {
+  std::array<int, 4> pv;
+  for (int k = 0; k < 4; k++)
+    pv[k] = kPsi[(n + k) % 4] * kPol[(n + z) % 127];
+  return pv;
+}
+
+// HT-SIG / VHT-SIG-A CRC (802.11 19.3.9.4.4): x^8 + x^2 + x + 1 over bits[0, n), register starting at
+// ones, sent complemented, c7 first.
+uint8_t crc8(const uint8_t *bits, int n) {
+  unsigned c = 0xff;
+  for (int i = 0; i < n; i++) {
+    const unsigned fb = ((c >> 7) & 1) ^ bits[i];
+    c = (c << 1) & 0xff;
+    if (fb)
+      c ^= 0x07;
+  }
+  return static_cast<uint8_t>(~c & 0xff);
+}
+
+// The 48 bits of two BPSK / QBPSK signal symbols (q: that symbol is on the imaginary axis), each
+// deinterleaved as L-SIG and weighted by its subcarrier's noise (w, by data subcarrier, from the LTF),
+// then decoded together, ending in state 0 (its tail). True when its CRC holds.
+bool sig48(const std::array<cf, 64> &z1, bool q1, const std::array<cf, 64> &z2, bool q2, const std::array<float, 48> &w,
+           std::array<uint8_t, 48> &out) {
+  const Tables &t = T();
+  std::vector<float> llr(96);
+  float norm = 0;
+  for (int s = 0; s < 2; s++) {
+    const auto &z = s ? z2 : z1;
+    const bool q = s ? q2 : q1;
+    for (int k = 0; k < 48; k++) {
+      const cf v = z[bin(t.data_sc[t.perm[k]])];
+      llr[48 * static_cast<size_t>(s) + k] = (q ? v.imag() : v.real()) / w[t.perm[k]];
+      norm += std::abs(llr[48 * static_cast<size_t>(s) + k]) / 96;
+    }
+  }
+  for (float &v : llr)
+    v /= norm + 1e-20f;
+  const auto b = viterbi(llr, true);
+  std::copy(b.begin(), b.begin() + 48, out.begin());
+  uint8_t c = 0;
+  for (int i = 0; i < 8; i++)
+    c = static_cast<uint8_t>(c | (out[34 + i] << (7 - i)));
+  return c == crc8(out.data(), 34);
+}
+
+// Bits per subcarrier and data bits per symbol (one stream, 20 MHz) of an HT MCS (0..7, mod 8) or a
+// VHT MCS (0..9); 0: none.
+int qam_bits(int mcs, bool vht) {
+  static const int b[10] = {1, 2, 2, 4, 4, 6, 6, 6, 8, 8};
+  const int m = vht ? mcs : mcs % 8;
+  return m >= 0 && m < 10 ? b[m] : 0;
+}
+
 // A point on 802.11's scale as int16 (Points::z).
 std::complex<int16_t> pt16(cf z) {
   const auto q = [](float v) { return static_cast<int16_t>(std::clamp(std::lround(v * kPointScale), -32767L, 32767L)); };
@@ -162,10 +237,10 @@ int bits_of(int rate) { return rate <= 9 ? 1 : rate <= 18 ? 2 : rate <= 36 ? 4 :
 cf nearest(cf z, int bits) {
   if (bits == 1)
     return {z.real() >= 0 ? 1.f : -1.f, 0.f};
-  const int top = bits == 2 ? 1 : bits == 4 ? 3 : 7; // the outermost level per axis (odd integers)
-  const float k = 1.f / std::sqrt(bits == 2 ? 2.f : bits == 4 ? 10.f : 42.f);
+  const int top = bits == 2 ? 1 : bits == 4 ? 3 : bits == 6 ? 7 : 15; // the outermost level per axis (odd)
+  const float k = 1.f / std::sqrt(bits == 2 ? 2.f : bits == 4 ? 10.f : bits == 6 ? 42.f : 170.f);
   const auto axis = [&](float v) {
-    const float u = std::clamp(v / (2 * k), -8.f, 8.f); // (a faded subcarrier can equalise to anything)
+    const float u = std::clamp(v / (2 * k), -16.f, 16.f); // (a faded subcarrier can equalise to anything)
     const int l = 2 * static_cast<int>(std::lround(std::floor(u))) + 1; // the nearest odd level
     return static_cast<float>(std::clamp(l, -top, top)) * k;
   };
@@ -338,6 +413,93 @@ double partner(double c) {
 
 } // namespace
 
+// An HT / VHT frame's payload points (f.pts after its SIG points), from the samples x (n of them, at
+// 20 MS/s, carrier offset removed) whose L-SIG FFT window starts at sig0: its SIG says the MCS, the
+// streams and the width; a single-stream 20 MHz frame is equalised on its own HT-LTF / VHT-LTF.
+// Layout after L-SIG, 80 samples a symbol: two SIG symbols, the STF, one LTF (FFT at sig0 + 320), and
+// for VHT the VHT-SIG-B; then data symbols of 64 + 16 (8 with a short guard interval) samples.
+static void ht_points(const cf *x, size_t n, size_t sig0, Frame &f, const std::array<cf, 64> &z1, const std::array<cf, 64> &z2,
+                      const std::array<float, 48> &w) {
+  const Tables &t = T();
+  Points &P = f.pts;
+  const bool vht = f.fmt == 'V';
+  std::array<uint8_t, 48> b{};
+  if (!sig48(z1, !vht, z2, true, w, b)) {
+    P.skip = 1;
+    return;
+  }
+  const auto field = [&](int at, int len) {
+    int v = 0;
+    for (int i = 0; i < len; i++)
+      v |= b[at + i] << i;
+    return v;
+  };
+  bool extra_ltf = false; // HT: extension spatial streams add HT-LTFs (the data starts later)
+  if (vht) { // VHT-SIG-A1 B0..B23, A2 B24..: a single user when the group id is 0 or 63
+    static const int kBw[4] = {20, 40, 80, 160};
+    P.width = kBw[field(0, 2)];
+    P.stbc = b[3];
+    const int group = field(4, 6);
+    const int nsts = field(10, 3) + 1; // space-time streams: two per spatial stream with STBC
+    P.nss = group == 0 || group == 63 ? (P.stbc ? (nsts + 1) / 2 : nsts) : 0; // (0: a multi-user frame)
+    P.sgi = b[24];
+    P.ldpc = b[26];
+    P.mcs = P.nss ? field(28, 4) : -1; // (multi-user: those bits are coding bits)
+  } else { // HT-SIG1 B0..B23, HT-SIG2 B24..
+    P.mcs = field(0, 7);
+    P.width = b[7] ? 40 : 20;
+    P.stbc = field(28, 2) != 0;
+    P.ldpc = b[30];
+    P.sgi = b[31];
+    // MCS 32: one stream; 33-76: unequal modulation over 2 (33-38), 3 (39-52) or 4 streams
+    P.nss = P.mcs < 32 ? P.mcs / 8 + 1 : P.mcs == 32 ? 1 : P.mcs <= 38 ? 2 : P.mcs <= 52 ? 3 : 4;
+    extra_ltf = field(32, 2) != 0;
+  }
+  if (P.width != 20) {
+    P.skip = 2;
+    return;
+  }
+  const int bits = P.mcs <= 31 ? qam_bits(P.mcs, vht) : 0; // (HT MCS 32 is a duplicate format)
+  if (P.nss != 1 || P.stbc || extra_ltf || !bits) {
+    P.skip = 3;
+    return;
+  }
+  // its channel, from the HT-LTF / VHT-LTF
+  const size_t ltf = sig0 + 320;
+  if (ltf + 64 > n) {
+    P.skip = 4;
+    return;
+  }
+  std::array<cf, 64> h;
+  std::copy(x + ltf, x + ltf + 64, h.begin());
+  fft(h.data(), 64);
+  for (int k = 0; k < 64; k++)
+    h[k] = t.htltf_f[k] != 0 ? h[k] / t.htltf_f[k] : cf(1);
+  // the data symbols the frame's airtime (L-SIG) and the snippet hold
+  const size_t cp = P.sgi ? 8 : 16, first = sig0 + (vht ? 464 : 384) + cp;
+  const double end = static_cast<double>(sig0) - 332 + f.dur_us * 20; // (the frame starts 332 before sig0)
+  double e = 0, r = 0;
+  int got = 0;
+  for (int i = 0; i < kPointSymbols; i++, got++) {
+    const size_t at = first + static_cast<size_t>(i) * (64 + cp);
+    if (at + 64 > n || static_cast<double>(at + 64) > end)
+      break;
+    const auto z = symbol(x + at, h, ht_pilots(i, vht ? 4 : 3));
+    for (int s : t.data52) {
+      const cf v = z[bin(s)], d = nearest(v, bits);
+      P.z.push_back(pt16(v));
+      e += std::norm(v - d);
+      r += std::norm(d);
+    }
+  }
+  if (!got) { // its airtime ends before its first data symbol: a sounding frame (NDP); else cut short
+    P.skip = static_cast<double>(first + 64) > end ? 5 : 4;
+    return;
+  }
+  P.bits = static_cast<uint8_t>(bits);
+  P.evm_db = evm_db(e, r);
+}
+
 bool Decoder::decode20(const cf *in, size_t n, Frame &f, bool payload, bool points) {
   const Tables &t = T();
   if (n < 720)
@@ -417,6 +579,9 @@ bool Decoder::decode20(const cf *in, size_t n, Frame &f, bool payload, bool poin
   std::array<float, 48> tmp = wd;
   std::nth_element(tmp.begin(), tmp.begin() + 24, tmp.end());
   const float floor = tmp[24] * 0.5f + 1e-20f;
+  std::array<float, 48> sw; // each data subcarrier's weight (its noise, floored), for the HT/VHT SIG
+  for (int i = 0; i < 48; i++)
+    sw[i] = wd[i] + floor;
   const size_t sig0 = w0 + 128 + 16;
   const auto zs = symbol(&x[sig0], h, kPol[0]);
   std::array<float, 48> soft;
@@ -480,6 +645,7 @@ bool Decoder::decode20(const cf *in, size_t n, Frame &f, bool payload, bool poin
         for (int s : t.data_sc)
           P.z.push_back(pt16((*z)[bin(s)]));
       P.n_sig2 = 96;
+      ht_points(x.data(), n, sig0, f, z1, z2, sw);
     } else { // a legacy payload: its first symbols that the snippet holds
       const int bits = bits_of(rate);
       const int nsym = std::min(kPointSymbols, static_cast<int>(std::ceil((16 + 8.0 * len + 6) / (4.0 * rate))));
@@ -815,10 +981,13 @@ void Decoder::frame_at(uint64_t pos_abs, std::vector<Frame> &out) {
     return;
   }
   // its first payload symbols for the constellation, when the header's snippet did not hold them
-  if (_points && f.fmt == 'L') {
+  // (HT / VHT: up to the end of its airtime; the frame starts 192 before the LTF, at most at 330)
+  if (_points && f.fmt != 'B') {
     const uint64_t nsym = static_cast<uint64_t>(
         std::min<double>(kPointSymbols, std::ceil((16 + 8.0 * f.length + 6) / (4.0 * f.rate_mbps))));
-    const uint64_t n20 = 330 + 144 + 80 * (nsym + 1) + 16;
+    const uint64_t n20 = f.fmt == 'L' ? 330 + 144 + 80 * (nsym + 1) + 16
+                                      : std::min<uint64_t>(330 + 144 + 464 + 80 * (kPointSymbols + 1),
+                                                           330 - 192 + static_cast<uint64_t>(f.dur_us * 20) + 16);
     if (n20 > z20.size()) {
       _pend.push_back({pos - pre, pos - pre + n20 * static_cast<uint64_t>(_dec) + _lp.size(), off, f, false});
       return;

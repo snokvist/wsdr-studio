@@ -661,7 +661,8 @@ json Engine::devices_json(const std::vector<DeviceInfo> &d) {
 // A kept frame and its points: {"frame", "t", "mhz", "bw", "fmt", "rate", "len", "snr", "cfo_hz",
 // "cfo_ppm" (against the channel's frequency), "evm_lsig_db", "evm_db" (payload; null: none), "bits"
 // (payload bits per subcarrier, 0 none), "n_lsig", "n_sig2" (then the payload's), "scale" (unit
-// power), "z": [I, Q, I, Q, ...] as integers; a 6 Mb/s frame decoded whole adds "ta" (its sender) and
+// power), "z": [I, Q, I, Q, ...] as integers; an HT / VHT frame adds from its SIG "mcs", "nss",
+// "width" (MHz), "sgi", "ldpc", "stbc" and "skip" (why no payload points: Points::skip); a 6 Mb/s frame decoded whole adds "ta" (its sender) and
 // a beacon "ssid"}.
 json Engine::points(uint64_t id) {
   std::lock_guard<std::mutex> l(_km);
@@ -690,6 +691,14 @@ json Engine::points(uint64_t id) {
           {"cfo_ppm", std::round(f.cfo_hz / f.centre_hz * 1e8) / 100}, {"evm_lsig_db", r1(P.evm_lsig_db)},
           {"evm_db", P.bits ? json(r1(P.evm_db)) : json(nullptr)}, {"bits", P.bits}, {"n_lsig", P.n_lsig},
           {"n_sig2", P.n_sig2}, {"scale", wifi::kPointScale}, {"z", z}};
+  if (f.fmt == 'H' || f.fmt == 'V') {
+    j["skip"] = P.skip;
+    if (P.width) { // (the SIG was read; a multi-user frame has no MCS: -1)
+      j.update({{"nss", P.nss}, {"width", P.width}, {"sgi", P.sgi}, {"ldpc", P.ldpc}, {"stbc", P.stbc}});
+      if (P.mcs >= 0)
+        j["mcs"] = P.mcs;
+    }
+  }
   j.update(who);
   return j;
 }
