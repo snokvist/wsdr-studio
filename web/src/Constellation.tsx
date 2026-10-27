@@ -19,9 +19,13 @@ function ideal(bits: number): [number, number][] {
   return out;
 }
 
+// (which side the panel sits on, for this window: it covers marks on its side)
+let side: 'right' | 'left' = 'right';
+
 export function Constellation(p: { data: FramePoints | null; error: string | null; onClose: () => void }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const [hide, setHide] = useState<Record<Group, boolean>>({ lsig: false, sig2: false, data: false });
+  const [left, setLeft] = useState(side === 'left');
   const d = p.data;
 
   useEffect(() => {
@@ -78,7 +82,7 @@ export function Constellation(p: { data: FramePoints | null; error: string | nul
   const chip = (g: Group, label: string, count: number) =>
     count > 0 && (
       <button
-        className={hide[g] ? 'mini' : 'mini on'}
+        className={hide[g] ? 'mini off' : 'mini on'}
         aria-pressed={!hide[g]}
         onClick={() => setHide((h) => ({ ...h, [g]: !h[g] }))}
         title={`Show or hide the ${label} points`}
@@ -87,10 +91,22 @@ export function Constellation(p: { data: FramePoints | null; error: string | nul
       </button>
     );
   return (
-    <aside className="inspector" aria-label="Frame inspector">
+    <aside className={left ? 'inspector left' : 'inspector'} aria-label="Frame inspector">
       <header>
         <b>Frame constellation</b>
-        <button className="x" onClick={p.onClose} title="Close (Esc)">
+        <span className="spacer" />
+        <button
+          className="x"
+          onClick={() => {
+            side = left ? 'right' : 'left';
+            setLeft(!left);
+          }}
+          title={`Move to the ${left ? 'right' : 'left'} (to reach the marks under it)`}
+          aria-label={left ? 'Move the panel right' : 'Move the panel left'}
+        >
+          {left ? '⇥' : '⇤'}
+        </button>
+        <button className="x" onClick={p.onClose} title="Close (Esc)" aria-label="Close">
           ×
         </button>
       </header>
@@ -125,7 +141,8 @@ export function Constellation(p: { data: FramePoints | null; error: string | nul
             )}
             <dt>EVM</dt>
             <dd>
-              {d.evm_db !== null ? `payload ${d.evm_db.toFixed(1)} dB · ` : ''}L-SIG {d.evm_lsig_db.toFixed(1)} dB
+              {d.evm_db !== null && <span className="evm">{d.evm_db.toFixed(1)} dB payload</span>}
+              <span className="evm">{d.evm_lsig_db.toFixed(1)} dB L-SIG</span>
             </dd>
             <dt>SNR</dt>
             <dd>{d.snr.toFixed(1)} dB (training fields)</dd>

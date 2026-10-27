@@ -319,7 +319,9 @@ button.rcell > span { max-width: 100%; }
   display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; background: var(--panel);
   border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px #0008;
 }
-.inspector header { display: flex; align-items: center; justify-content: space-between; }
+.inspector.left { right: auto; left: 52px; } /* (past the dBFS axis) */
+.inspector header { display: flex; align-items: center; gap: 2px; }
+.inspector .legend button.off { text-decoration: line-through; } /* (.legend button.off dims it) */
 .inspector button.x { background: transparent; border-color: transparent; font-size: 16px; line-height: 1; }
 .mode-panorama .view .inspector { display: none; }
 .inspector canvas.iq { width: 100%; aspect-ratio: 1; border: 1px solid var(--line); border-radius: 4px; }
@@ -328,3 +330,4 @@ button.rcell > span { max-width: 100%; }
 .inspector dl.kv { margin: 0; font-size: 12px; }
 .inspector dl.kv dt { margin: 0; }
 .inspector dl.kv dd { margin: 0; color: var(--text); font-family: var(--mono); font-size: 11.5px; }
+.inspector dl.kv dd .evm { display: block; white-space: nowrap; }
