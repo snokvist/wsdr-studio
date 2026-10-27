@@ -5,15 +5,27 @@ import { useEffect, useRef, useState } from 'react';
 import type { FramePoints } from './protocol';
 
 const FORMAT: Record<string, string> = { L: 'Legacy OFDM', H: '802.11n (HT)', V: '802.11ac (VHT)', B: '802.11b' };
-const MOD: Record<number, string> = { 1: 'BPSK', 2: 'QPSK', 4: '16-QAM', 6: '64-QAM' };
+const MOD: Record<number, string> = { 1: 'BPSK', 2: 'QPSK', 4: '16-QAM', 6: '64-QAM', 8: '256-QAM' };
+// why an HT / VHT frame's payload is not shown (FramePoints.skip)
+const SKIP: Record<number, string> = {
+  1: 'Its HT/VHT signal field did not pass its CRC, so its MCS is unknown.',
+  2: 'It is sent across more than 20 MHz; the payload is shown for 20 MHz frames.',
+  3: 'It is not a plain single-stream frame (more streams, STBC, or an MCS this does not read); the payload is shown for single-stream frames.',
+  4: 'Its payload had not arrived (the stream restarted, or the frame was cut short).',
+  5: 'It carries no payload: a sounding frame (NDP), sent to measure the channel.',
+};
 const R = 1.6; // the plot spans -R..R on both axes (unit mean power: 64-QAM's outer levels sit at 1.08)
 type Group = 'lsig' | 'sig2' | 'data';
 const COLOUR: Record<Group, string> = { lsig: '#e0b46a', sig2: '#f48fb1', data: '#dfe6ee' };
 
+// dB with its sign (an EVM above 0 dB is possible and must read as such)
+const db = (v: number) => `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(1)} dB`;
+
 // The ideal points of a constellation at unit mean power (bits per subcarrier; 1 BPSK)
 function ideal(bits: number): [number, number][] {
   if (bits === 1) return [[-1, 0], [1, 0]];
-  const top = bits === 2 ? 1 : bits === 4 ? 3 : 7, k = 1 / Math.sqrt(bits === 2 ? 2 : bits === 4 ? 10 : 42);
+  const top = bits === 2 ? 1 : bits === 4 ? 3 : bits === 6 ? 7 : 15;
+  const k = 1 / Math.sqrt(bits === 2 ? 2 : bits === 4 ? 10 : bits === 6 ? 42 : 170);
   const out: [number, number][] = [];
   for (let i = -top; i <= top; i += 2) for (let q = -top; q <= top; q += 2) out.push([i * k, q * k]);
   return out;
@@ -130,6 +142,18 @@ export function Constellation(p: { data: FramePoints | null; error: string | nul
               {FORMAT[d.fmt] ?? d.fmt} · {d.mhz.toFixed(0)} MHz{d.bw > 20 ? ` (${d.bw} MHz)` : ''} · {d.len} bytes
               {d.fmt === 'L' ? ` at ${d.rate} Mb/s` : ''}
             </dd>
+            {(d.mcs !== undefined || d.nss === 0) && (
+              <>
+                <dt>Signal</dt>
+                <dd>
+                  {d.mcs !== undefined && d.mcs >= 0 ? `MCS ${d.mcs} · ` : ''}
+                  {d.nss === 0 ? 'multi-user' : `${d.nss} stream${d.nss === 1 ? '' : 's'}`} · {d.width} MHz
+                  {d.sgi ? ' · short GI' : ''}
+                  {d.ldpc ? ' · LDPC' : ''}
+                  {d.stbc ? ' · STBC' : ''}
+                </dd>
+              </>
+            )}
             {d.ta && (
               <>
                 <dt>From</dt>
@@ -141,8 +165,8 @@ export function Constellation(p: { data: FramePoints | null; error: string | nul
             )}
             <dt>EVM</dt>
             <dd>
-              {d.evm_db !== null && <span className="evm">{d.evm_db.toFixed(1)} dB payload</span>}
-              <span className="evm">{d.evm_lsig_db.toFixed(1)} dB L-SIG</span>
+              {d.evm_db !== null && <span className="evm">{db(d.evm_db)} payload</span>}
+              <span className="evm">{db(d.evm_lsig_db)} L-SIG</span>
             </dd>
             <dt>SNR</dt>
             <dd>{d.snr.toFixed(1)} dB (training fields)</dd>
@@ -154,11 +178,18 @@ export function Constellation(p: { data: FramePoints | null; error: string | nul
             </dd>
           </dl>
           <p className="note">
-            {d.fmt === 'L'
-              ? `Payload: its first ${nData / 48} OFDM symbol${nData === 48 ? '' : 's'}. `
-              : 'The HT/VHT payload itself is not shown yet. '}
+            {nData > 0
+              ? `Payload: its first ${nData / (d.fmt === 'L' ? 48 : 52)} OFDM symbol${nData === (d.fmt === 'L' ? 48 : 52) ? '' : 's'}${
+                  d.fmt === 'L' ? '' : ', equalised on its own HT/VHT training field'
+                }. `
+              : d.skip
+                ? `${SKIP[d.skip] ?? ''} `
+                : ''}
             EVM is against the nearest ideal point and counts everything on the way: the sender, the path and this
-            receiver. Strong frames reading worse than weaker ones means the gain is too high for them.
+            receiver. Strong frames reading worse than weaker ones means the gain is too high for them;
+            {Math.max(d.evm_lsig_db, d.evm_db ?? -99) > 0
+              ? ' above 0 dB the points do not fit the constellation at all (with a good SNR: echoes longer than the guard interval, or the sender itself).'
+              : ' above 0 dB the points would not fit the constellation at all.'}
           </p>
         </>
       )}

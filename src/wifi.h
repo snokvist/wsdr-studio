@@ -15,15 +15,24 @@ namespace wifi {
 using cf = std::complex<float>;
 
 // The equalised data subcarriers behind a frame (Decoder::keep_points), for a constellation: L-SIG
-// (BPSK), the two HT-SIG / VHT-SIG-A symbols, then a legacy frame's first payload symbols. On 802.11's
-// own scale (unit mean power per constellation), times kPointScale, as int16.
+// (BPSK), the two HT-SIG / VHT-SIG-A symbols, then the payload's first symbols (a legacy frame's 48
+// subcarriers; a single-stream 20 MHz HT / VHT frame's 52, equalised on its own HT/VHT-LTF). On
+// 802.11's own scale (unit mean power per constellation), times kPointScale, as int16.
 constexpr float kPointScale = 4096;
 constexpr int kPointSymbols = 32; // payload symbols kept at most
 struct Points {
   std::vector<std::complex<int16_t>> z;
   uint16_t n_lsig = 0, n_sig2 = 0;   // then the payload's
-  uint8_t bits = 0;                  // payload bits per subcarrier: 1, 2, 4, 6 (0: no payload points)
+  uint8_t bits = 0;                  // payload bits per subcarrier: 1, 2, 4, 6, 8 (0: no payload points)
   float evm_lsig_db = 0, evm_db = 0; // decision-directed EVM of L-SIG and of the payload (0: none)
+  // HT / VHT: from HT-SIG / VHT-SIG-A when its CRC holds
+  int mcs = -1;                      // HT 0..31, VHT 0..9 (-1: not read)
+  int nss = 0, width = 0;            // spatial streams, channel width (MHz) the frame says it uses
+  bool sgi = false, ldpc = false, stbc = false;
+  // why an HT / VHT frame has no payload points: 0 shown, 1 its SIG failed its CRC, 2 wider than
+  // 20 MHz, 3 not a single plain stream (more streams, STBC, an MCS this does not read), 4 its payload
+  // had not arrived, 5 it has none (a sounding frame, NDP)
+  int skip = 0;
 };
 
 struct Frame {
@@ -56,7 +65,7 @@ class Decoder {
 public:
   // fs: 20 or 40 MS/s (anything else finds nothing); centre_hz: the samples' centre frequency.
   void reset(double fs, double centre_hz);
-  // Also keep each frame's equalised subcarriers (Frame::pts); a legacy frame is then reported once
+  // Also keep each frame's equalised subcarriers (Frame::pts); an OFDM frame is then reported once
   // its first payload symbols have arrived (one still arriving at reset() is not reported).
   void keep_points(bool on) { _points = on; }
   // Contiguous samples, in order; t_end: the time (s) just after the last one. Frames found are

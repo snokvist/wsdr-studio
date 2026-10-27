@@ -7,7 +7,7 @@ export type Rate = { rate_sel: number; fs: number; gapped?: boolean; hw_fs?: num
 export type Device = {
   pid: number; model: string; chip: string; bus: number; port: string; speed_mbps: number;
   controller: string; driver: string; can_open: boolean; max_msps: number;
-  gapped_msps?: number; // widest span in gapped mode (40; 80 on an 8812BU on USB 3), 0 = none
+  gapped_msps?: number; // widest span in gapped mode (40 on the 8812CU, 80 on the 8812BU), 0 = none
 };
 export type Caps = {
   open: boolean; adapter?: string; pid?: number; bus?: number; port?: string; chip?: string; superspeed?: boolean; paths?: number;
@@ -33,6 +33,10 @@ export type FramePoints = {
   cfo_hz: number; cfo_ppm: number; evm_lsig_db: number; evm_db: number | null; bits: number; n_lsig: number; n_sig2: number;
   scale: number; z: number[];
   ta?: string; ssid?: string; // a 6 Mb/s frame decoded whole: its sender; a beacon: its network
+  // HT / VHT, from its SIG: why the payload is not shown (0 shown, 1 SIG CRC failed, 2 wider than 20 MHz,
+  // 3 not a plain single stream, 4 not received, 5 none: a sounding frame), and when the SIG was read
+  // its streams (0: multi-user), width and (not multi-user) MCS
+  skip?: number; mcs?: number; nss?: number; width?: number; sgi?: boolean; ldpc?: boolean; stbc?: boolean;
 };
 // Another signal found in the samples (the "wifi" event's "other"): start (s), centre (MHz), width
 // (MHz), kind (T Bluetooth, N narrowband, M microwave oven, E BLE advertising, C steady carrier),

@@ -468,6 +468,146 @@ static void test_wifi_frames() {
   }
 }
 
+// An HT (802.11n) or VHT (802.11ac) frame at 40 MS/s, off_hz from the centre: a legacy preamble and
+// L-SIG whose length covers it, the two SIG symbols (HT-SIG: QBPSK, QBPSK; VHT-SIG-A: BPSK, QBPSK) with
+// their CRC, the STF, the HT/VHT-LTF, VHT-SIG-B, then nsym data symbols of random points on the 52
+// data subcarriers (one stream), with the HT pilots; the points sent go to *sent. width and nss go in
+// the SIG as given; bad_crc flips a SIG bit after the CRC.
+struct HtSpec { bool vht; int mcs; bool sgi; int nsym; int width = 20; int nss = 1; bool bad_crc = false; bool stbc = false; bool ldpc = false; };
+static std::vector<std::complex<float>> ht_frame(const HtSpec &h, double off_hz, std::mt19937 &rng, std::vector<std::complex<float>> *sent) {
+  using C = std::complex<float>;
+  const int shift = static_cast<int>(std::lround(off_hz / 312.5e3));
+  auto sym = [&](const std::array<C, 64> &sc, int cp) { // sc by subcarrier -32..31 (index s + 32), 128-point at 40 MS/s
+    std::array<C, 128> f{};
+    for (int s = -32; s < 32; s++)
+      f[(s + shift + 128) % 128] = sc[s + 32];
+    std::vector<C> t(128);
+    for (int n = 0; n < 128; n++) {
+      C acc = 0;
+      for (int k = 0; k < 128; k++)
+        acc += f[k] * std::polar(1.f, static_cast<float>(2 * M_PI * k * n / 128));
+      t[n] = acc / 128.f;
+    }
+    std::vector<C> out(t.end() - cp, t.end());
+    out.insert(out.end(), t.begin(), t.end());
+    return out;
+  };
+  // the airtime after the legacy preamble (us), and an L-SIG length (6 Mb/s) that covers it
+  const double us = 8 + 4 + 4 + (h.vht ? 4 : 0) + h.nsym * (h.sgi ? 3.6 : 4.0);
+  int L = 1;
+  while (4 * std::ceil((16 + 8.0 * L + 6) / 24) < us)
+    L++;
+  std::vector<C> x = ofdm_frame(0b1101, L, off_hz, false, 0, rng);
+  // the SIG bits (LSB first per field)
+  uint8_t b[48] = {};
+  auto put = [&](int at, int len, int v) {
+    for (int i = 0; i < len; i++)
+      b[at + i] = static_cast<uint8_t>((v >> i) & 1);
+  };
+  if (h.vht) {
+    put(0, 2, h.width == 20 ? 0 : h.width == 40 ? 1 : h.width == 80 ? 2 : 3);
+    b[2] = 1;
+    b[3] = h.stbc;
+    put(10, 3, h.nss * (h.stbc ? 2 : 1) - 1); // space-time streams
+    b[23] = 1;
+    b[24] = h.sgi;
+    b[26] = h.ldpc;
+    put(28, 4, h.mcs);
+    b[33] = 1;
+  } else {
+    put(0, 7, h.mcs + 8 * (h.nss - 1));
+    b[7] = h.width == 40;
+    put(8, 16, 1000);
+    b[24 + 1] = 1; // not sounding
+    b[24 + 2] = 1; // reserved
+    b[24 + 7] = h.sgi;
+    put(28, 2, h.stbc ? 1 : 0);
+    b[30] = h.ldpc;
+  }
+  unsigned c = 0xff;
+  for (int i = 0; i < 34; i++) {
+    const unsigned fb = ((c >> 7) & 1) ^ b[i];
+    c = (c << 1) & 0xff;
+    if (fb)
+      c ^= 0x07;
+  }
+  c = ~c & 0xff;
+  for (int i = 0; i < 8; i++)
+    b[34 + i] = static_cast<uint8_t>((c >> (7 - i)) & 1);
+  if (h.bad_crc)
+    b[5] ^= 1;
+  int coded[96], reg = 0;
+  for (int i = 0; i < 48; i++) {
+    const int r = (b[i] << 6) | reg;
+    coded[2 * i] = __builtin_parity(r & 0133);
+    coded[2 * i + 1] = __builtin_parity(r & 0171);
+    reg = r >> 1;
+  }
+  std::vector<int> dsc, d52;
+  for (int s = -28; s <= 28; s++)
+    if (s != 0 && s != -21 && s != -7 && s != 7 && s != 21) {
+      d52.push_back(s);
+      if (s >= -26 && s <= 26)
+        dsc.push_back(s);
+    }
+  const int ps[4] = {-21, -7, 7, 21}, pv[4] = {1, 1, 1, -1}, psi[4] = {1, 1, 1, -1};
+  for (int s = 0; s < 2; s++) { // the SIG symbols: legacy pilots, polarity p_1, p_2
+    std::array<C, 64> sc{};
+    const C rot = h.vht && s == 0 ? C(1, 0) : C(0, 1);
+    for (int k = 0; k < 48; k++)
+      sc[dsc[3 * (k % 16) + k / 16] + 32] = rot * static_cast<float>(2 * coded[48 * s + k] - 1);
+    for (int i = 0; i < 4; i++)
+      sc[ps[i] + 32] = static_cast<float>(pv[i] * kPolT[s + 1]);
+    auto y = sym(sc, 32);
+    x.insert(x.end(), y.begin(), y.end());
+  }
+  std::array<C, 64> stf{};
+  const int stf_sc[12] = {-24, -20, -16, -12, -8, -4, 4, 8, 12, 16, 20, 24};
+  const float stf_v[12] = {1, -1, 1, -1, -1, 1, -1, -1, 1, 1, 1, 1};
+  for (int i = 0; i < 12; i++)
+    stf[stf_sc[i] + 32] = C(stf_v[i], stf_v[i]) * std::sqrt(13.f / 6.f);
+  auto st = sym(stf, 32);
+  x.insert(x.end(), st.begin(), st.end());
+  const int ltf[53] = {1, 1, -1, -1, 1, 1, -1, 1, -1, 1, 1, 1, 1, 1, 1, -1, -1, 1, 1, -1, 1, -1, 1, 1, 1, 1, 0,
+                       1, -1, -1, 1, 1, -1, 1, -1, 1, -1, -1, -1, -1, -1, 1, 1, -1, -1, 1, -1, 1, -1, 1, 1, 1, 1};
+  std::array<C, 64> lf{};
+  for (int i = 0; i < 53; i++)
+    lf[i - 26 + 32] = static_cast<float>(ltf[i]);
+  lf[-28 + 32] = lf[-27 + 32] = 1;
+  lf[27 + 32] = lf[28 + 32] = -1;
+  auto lt = sym(lf, 32);
+  x.insert(x.end(), lt.begin(), lt.end());
+  std::uniform_int_distribution<int> bit(0, 1);
+  if (h.vht) { // VHT-SIG-B: some BPSK (the decoder skips it)
+    std::array<C, 64> sc{};
+    for (int s : d52)
+      sc[s + 32] = static_cast<float>(2 * bit(rng) - 1);
+    for (int i = 0; i < 4; i++)
+      sc[ps[i] + 32] = static_cast<float>(psi[i] * kPolT[3]);
+    auto y = sym(sc, 32);
+    x.insert(x.end(), y.begin(), y.end());
+  }
+  const int bits = h.vht ? (int[]){1, 2, 2, 4, 4, 6, 6, 6, 8, 8}[h.mcs] : (int[]){1, 2, 2, 4, 4, 6, 6, 6}[h.mcs % 8];
+  const int top = bits == 1 ? 1 : bits == 2 ? 1 : bits == 4 ? 3 : bits == 6 ? 7 : 15;
+  const float k = bits == 1 ? 1.f : 1.f / std::sqrt(bits == 2 ? 2.f : bits == 4 ? 10.f : bits == 6 ? 42.f : 170.f);
+  std::uniform_int_distribution<int> level(0, top);
+  for (int n = 0; n < h.nsym; n++) {
+    std::array<C, 64> sc{};
+    for (int s : d52) {
+      const C v = bits == 1 ? C(static_cast<float>(2 * bit(rng) - 1), 0)
+                            : C(static_cast<float>(2 * level(rng) - top), static_cast<float>(2 * level(rng) - top)) * k;
+      sc[s + 32] = v;
+      if (sent)
+        sent->push_back(v);
+    }
+    for (int i = 0; i < 4; i++)
+      sc[ps[i] + 32] = static_cast<float>(psi[(n + i) % 4] * kPolT[(n + (h.vht ? 4 : 3)) % 127]);
+    auto y = sym(sc, h.sgi ? 16 : 32);
+    x.insert(x.end(), y.begin(), y.end());
+  }
+  return x;
+}
+
 // The equalised points behind each frame (Decoder::keep_points): L-SIG on BPSK, HT-SIG on QBPSK, a
 // 54 Mb/s payload on 64-QAM at unit power, EVM near the SNR, and the carrier offset.
 static void test_wifi_points() {
@@ -541,6 +681,74 @@ static void test_wifi_points() {
       pw /= static_cast<double>(P.z.size() - 48);
       CHECK(std::abs(10 * std::log10(pw)) < 0.5);
     }
+  }
+}
+
+// HT / VHT payloads (constellation phase 2): a single-stream 20 MHz frame's data points, equalised on
+// its own HT/VHT-LTF, against what was sent; frames the decoder cannot show say why.
+static void test_ht_points() {
+  std::mt19937 rng(23);
+  std::normal_distribution<float> g(0, 1);
+  const double fs = 40e6, centre = 5190e6, cfo = 60e3;
+  wifi::Decoder dec;
+  dec.reset(fs, centre);
+  dec.keep_points(true);
+  struct Want { HtSpec h; int skip; int bits; };
+  const std::vector<Want> want = {
+      {{false, 7, true, 12}, 0, 6},              // HT MCS 7, 64-QAM, short GI
+      {{true, 8, false, 10}, 0, 8},              // VHT MCS 8, 256-QAM
+      {{false, 1, false, 6}, 0, 2},              // HT MCS 1, QPSK
+      {{false, 3, false, 6, 40}, 2, 0},          // says 40 MHz
+      {{true, 4, false, 6, 20, 2}, 3, 0},        // two streams
+      {{false, 3, false, 6, 20, 1, true}, 1, 0}, // SIG CRC broken
+      {{true, 5, true, 8, 20, 1, false, false, true}, 0, 6},  // VHT MCS 5, short GI, LDPC
+      {{false, 2, false, 6, 20, 1, false, true}, 3, 0},       // HT with STBC
+      {{true, 2, false, 6, 20, 1, false, true}, 3, 0},        // VHT, one stream with STBC (2 space-time)
+      {{true, 0, false, 0}, 5, 0},                            // VHT NDP: no data symbols
+  };
+  std::vector<std::vector<std::complex<float>>> sent(want.size());
+  std::vector<std::complex<float>> x;
+  auto noise = [&](size_t n) {
+    for (size_t i = 0; i < n; i++)
+      x.emplace_back(0.05f * g(rng), 0.05f * g(rng));
+  };
+  noise(30000);
+  for (size_t w = 0; w < want.size(); w++) {
+    auto f = ht_frame(want[w].h, 10e6, rng, &sent[w]);
+    for (size_t i = 0; i < f.size(); i++)
+      x.push_back(f[i] * std::polar(1.f, static_cast<float>(2 * M_PI * cfo * static_cast<double>(i) / fs)) * 17.8f + // ~23 dB SNR
+                  std::complex<float>(0.05f * g(rng), 0.05f * g(rng)));
+    noise(20000);
+  }
+  std::vector<wifi::Frame> got;
+  for (size_t i = 0; i < x.size(); i += 8192) {
+    const size_t n = std::min<size_t>(8192, x.size() - i);
+    dec.feed(&x[i], n, static_cast<double>(i + n) / fs, got);
+  }
+  std::sort(got.begin(), got.end(), [](const wifi::Frame &a, const wifi::Frame &b) { return a.t < b.t; });
+  CHECK(got.size() == want.size());
+  for (size_t i = 0; i < std::min(got.size(), want.size()); i++) {
+    const auto &f = got[i];
+    const auto &w = want[i];
+    const auto &P = f.pts;
+    if (getenv("DUMP"))
+      std::printf("  %c mcs %d nss %d width %d sgi %d skip %d bits %u points %zu evm %.1f dB\n", f.fmt, P.mcs, P.nss, P.width, P.sgi,
+                  P.skip, P.bits, P.z.size(), P.evm_db);
+    CHECK(f.fmt == (w.h.vht ? 'V' : 'H'));
+    CHECK(P.skip == w.skip && P.bits == w.bits);
+    if (w.skip == 1)
+      continue;
+    CHECK(P.mcs == (w.h.vht ? w.h.mcs : w.h.mcs + 8 * (w.h.nss - 1)) && P.width == w.h.width && P.nss == w.h.nss && P.sgi == w.h.sgi);
+    CHECK(P.stbc == w.h.stbc && P.ldpc == w.h.ldpc);
+    if (w.skip)
+      continue;
+    const size_t at = 48 + 96;
+    CHECK(P.z.size() == at + sent[i].size());
+    double e = 0; // each point near the one sent (sign, scale, pilots, the LTF's channel)
+    for (size_t k = 0; k < sent[i].size() && at + k < P.z.size(); k++)
+      e += std::norm(std::complex<float>(P.z[at + k].real(), P.z[at + k].imag()) / wifi::kPointScale - sent[i][k]);
+    CHECK(e / static_cast<double>(sent[i].size()) < 0.02);
+    CHECK(P.evm_db < -15);
   }
 }
 
@@ -1095,6 +1303,7 @@ int main(int argc, char **argv) {
   test_crop();
   test_wifi_frames();
   test_wifi_points();
+  test_ht_points();
   test_ssid_text();
   test_dsss_beacon();
   test_signals();

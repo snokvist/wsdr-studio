@@ -66,9 +66,9 @@ std::vector<DeviceInfo> scan_devices() {
     std::snprintf(node, sizeof node, "/dev/bus/usb/%03d/%03d", info.bus, libusb_get_device_address(list[i]));
     info.can_open = access(node, R_OK | W_OK) == 0;
     info.max_msps = !cu && info.speed_mbps >= 5000 ? 40 : 5;
-    // gapped spans wider than the link carries: 40 MS/s over USB 2 (and the 8812CU), 80 MS/s on an
-    // 8812BU on USB 3 (wifi-sdr evidence/gapped-80msps.txt)
-    info.gapped_msps = cu || info.speed_mbps < 5000 ? 40 : 80;
+    // gapped spans wider than the link carries: up to 40 MS/s on the 8812CU, 80 MS/s on an 8812BU on
+    // either link (wifi-sdr evidence/gapped-80msps.txt)
+    info.gapped_msps = cu ? 40 : 80;
     out.push_back(info);
   }
   if (list)
