@@ -149,6 +149,35 @@ std::array<cf, 64> symbol(const cf *x, const std::array<cf, 64> &h, int polarity
   return z;
 }
 
+// A point on 802.11's scale as int16 (Points::z).
+std::complex<int16_t> pt16(cf z) {
+  const auto q = [](float v) { return static_cast<int16_t>(std::clamp(std::lround(v * kPointScale), -32767L, 32767L)); };
+  return {q(z.real()), q(z.imag())};
+}
+
+// Payload bits per subcarrier at a legacy rate (Mb/s): BPSK, QPSK, 16-QAM, 64-QAM.
+int bits_of(int rate) { return rate <= 9 ? 1 : rate <= 18 ? 2 : rate <= 36 ? 4 : 6; }
+
+// The nearest point of that constellation, at unit mean power (802.11's K_MOD).
+cf nearest(cf z, int bits) {
+  if (bits == 1)
+    return {z.real() >= 0 ? 1.f : -1.f, 0.f};
+  const int top = bits == 2 ? 1 : bits == 4 ? 3 : 7; // the outermost level per axis (odd integers)
+  const float k = 1.f / std::sqrt(bits == 2 ? 2.f : bits == 4 ? 10.f : 42.f);
+  const auto axis = [&](float v) {
+    const float u = std::clamp(v / (2 * k), -8.f, 8.f); // (a faded subcarrier can equalise to anything)
+    const int l = 2 * static_cast<int>(std::lround(std::floor(u))) + 1; // the nearest odd level
+    return static_cast<float>(std::clamp(l, -top, top)) * k;
+  };
+  return {axis(z.real()), axis(z.imag())};
+}
+
+// Error vector magnitude against the decided points, dB (energy of the errors / of the points).
+float evm_db(double err, double ref) { return static_cast<float>(10 * std::log10((err + 1e-30) / (ref + 1e-30))); }
+
+// FFT windows start this many samples (at 20 MS/s) into the guard interval (see decode20)
+constexpr size_t kBackoff = 4;
+
 int rate_of(int code) {
   switch (code) {
   case 0b1101: return 6;
@@ -309,7 +338,7 @@ double partner(double c) {
 
 } // namespace
 
-bool Decoder::decode20(const cf *in, size_t n, Frame &f, bool payload) {
+bool Decoder::decode20(const cf *in, size_t n, Frame &f, bool payload, bool points) {
   const Tables &t = T();
   if (n < 720)
     return false;
@@ -347,9 +376,14 @@ bool Decoder::decode20(const cf *in, size_t n, Frame &f, bool payload) {
   const double fine = std::arg(d) / (2 * kPi * 64);
   rotate(x.data(), n, -fine);
   cfo += fine;
+  f.cfo_hz = cfo * 20e6;
   std::array<cf, 64> f1, f2, h;
-  std::copy(x.begin() + static_cast<long>(l1), x.begin() + static_cast<long>(l1 + 64), f1.begin());
-  std::copy(x.begin() + static_cast<long>(l1 + 64), x.begin() + static_cast<long>(l1 + 128), f2.begin());
+  // every FFT window starts kBackoff samples early, inside the guard interval: a window late by even a
+  // sample takes in the next symbol where the channel spreads it; the phase ramp this adds is the same
+  // in H and in the symbols, so it divides out
+  const size_t w0 = l1 - kBackoff;
+  std::copy(x.begin() + static_cast<long>(w0), x.begin() + static_cast<long>(w0 + 64), f1.begin());
+  std::copy(x.begin() + static_cast<long>(w0 + 64), x.begin() + static_cast<long>(w0 + 128), f2.begin());
   fft(f1.data(), 64);
   fft(f2.data(), 64);
   double ps = 0, pn = 0;
@@ -383,7 +417,7 @@ bool Decoder::decode20(const cf *in, size_t n, Frame &f, bool payload) {
   std::array<float, 48> tmp = wd;
   std::nth_element(tmp.begin(), tmp.begin() + 24, tmp.end());
   const float floor = tmp[24] * 0.5f + 1e-20f;
-  const size_t sig0 = l1 + 128 + 16;
+  const size_t sig0 = w0 + 128 + 16;
   const auto zs = symbol(&x[sig0], h, kPol[0]);
   std::array<float, 48> soft;
   float norm = 0;
@@ -414,9 +448,9 @@ bool Decoder::decode20(const cf *in, size_t n, Frame &f, bool payload) {
   f.t = (static_cast<double>(l1) - 232) / 20e6; // the frame's start relative to where it was looked for
   // HT-SIG: two QBPSK symbols; VHT-SIG-A: BPSK then QBPSK (both only after a 6 Mb/s L-SIG)
   f.fmt = 'L';
+  std::array<cf, 64> z1{}, z2{};
   if (rate == 6) {
-    auto q = [&](size_t at, int pol) {
-      const auto z = symbol(&x[at], h, pol);
+    auto q = [&](const std::array<cf, 64> &z) {
       float re = 0, im = 0;
       for (int s : t.data_sc) {
         re += std::abs(z[bin(s)].real());
@@ -424,10 +458,48 @@ bool Decoder::decode20(const cf *in, size_t n, Frame &f, bool payload) {
       }
       return im > re;
     };
-    const bool q1 = q(sig0 + 80, kPol[1]), q2 = q(sig0 + 160, kPol[2]);
+    z1 = symbol(&x[sig0 + 80], h, kPol[1]);
+    z2 = symbol(&x[sig0 + 160], h, kPol[2]);
+    const bool q1 = q(z1), q2 = q(z2);
     f.fmt = q1 ? 'H' : q2 ? 'V' : 'L';
   }
-  (void)cfo;
+  if (points) {
+    Points &P = f.pts;
+    P = {};
+    double e = 0, r = 0;
+    for (int s : t.data_sc) {
+      const cf z = zs[bin(s)], d = nearest(z, 1);
+      P.z.push_back(pt16(z));
+      e += std::norm(z - d);
+      r += std::norm(d);
+    }
+    P.n_lsig = 48;
+    P.evm_lsig_db = evm_db(e, r);
+    if (f.fmt != 'L') { // HT-SIG (QBPSK, QBPSK) or VHT-SIG-A (BPSK, QBPSK)
+      for (const auto *z : {&z1, &z2})
+        for (int s : t.data_sc)
+          P.z.push_back(pt16((*z)[bin(s)]));
+      P.n_sig2 = 96;
+    } else { // a legacy payload: its first symbols that the snippet holds
+      const int bits = bits_of(rate);
+      const int nsym = std::min(kPointSymbols, static_cast<int>(std::ceil((16 + 8.0 * len + 6) / (4.0 * rate))));
+      e = r = 0;
+      int got = 0;
+      for (int i = 0; i < nsym && sig0 + 80 * static_cast<size_t>(i + 1) + 64 <= n; i++, got++) {
+        const auto z = symbol(&x[sig0 + 80 * static_cast<size_t>(i + 1)], h, kPol[(i + 1) % 127]);
+        for (int s : t.data_sc) {
+          const cf v = z[bin(s)], d = nearest(v, bits);
+          P.z.push_back(pt16(v));
+          e += std::norm(v - d);
+          r += std::norm(d);
+        }
+      }
+      if (got) {
+        P.bits = static_cast<uint8_t>(bits);
+        P.evm_db = evm_db(e, r);
+      }
+    }
+  }
   const int nsym = static_cast<int>(std::ceil((16 + 8.0 * len + 6) / 24));
   if (!payload || rate != 6 || f.fmt != 'L' || len < 14 || sig0 + 80 * static_cast<size_t>(nsym + 1) > n)
     return true;
@@ -728,7 +800,7 @@ void Decoder::frame_at(uint64_t pos_abs, std::vector<Frame> &out) {
   const double off = c - _centre;
   const auto z20 = snippet(pos - pre, len, off);
   Frame f;
-  if (!decode20(z20.data(), z20.size(), f))
+  if (!decode20(z20.data(), z20.size(), f, false, _points))
     return;
   // (decode20 left the offset from pos; at 40 MS/s the 41-tap filter delays the snippet by 10 samples
   // of 20 MS/s)
@@ -742,7 +814,17 @@ void Decoder::frame_at(uint64_t pos_abs, std::vector<Frame> &out) {
     _pend.push_back({pos - pre, pos - pre + n20 * static_cast<uint64_t>(_dec) + _lp.size(), off, f});
     return;
   }
-  out.push_back(f);
+  // its first payload symbols for the constellation, when the header's snippet did not hold them
+  if (_points && f.fmt == 'L') {
+    const uint64_t nsym = static_cast<uint64_t>(
+        std::min<double>(kPointSymbols, std::ceil((16 + 8.0 * f.length + 6) / (4.0 * f.rate_mbps))));
+    const uint64_t n20 = 330 + 144 + 80 * (nsym + 1) + 16;
+    if (n20 > z20.size()) {
+      _pend.push_back({pos - pre, pos - pre + n20 * static_cast<uint64_t>(_dec) + _lp.size(), off, f, false});
+      return;
+    }
+  }
+  out.push_back(std::move(f));
   (void)t;
 }
 
@@ -788,7 +870,10 @@ void Decoder::finish(std::vector<Frame> &out) {
     }
     const auto z20 = snippet(p.pos, p.end - p.pos, p.off);
     Frame g;
-    if (decode20(z20.data(), z20.size(), g, true) && g.mac) {
+    const bool ok = decode20(z20.data(), z20.size(), g, p.whole, _points);
+    if (ok && _points)
+      p.f.pts = std::move(g.pts); // (the header's own, from fewer symbols, otherwise)
+    if (ok && g.mac) {
       Frame &f = p.f; // its timing and channel stay; the MAC fields come from the whole decode
       f.mac = true;
       f.type = g.type;
@@ -800,7 +885,7 @@ void Decoder::finish(std::vector<Frame> &out) {
       f.ssid = g.ssid;
       f.channel = g.channel;
     }
-    out.push_back(p.f);
+    out.push_back(std::move(p.f));
     _pend.erase(_pend.begin() + static_cast<long>(i));
   }
 }
