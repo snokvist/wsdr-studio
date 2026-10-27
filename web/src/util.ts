@@ -42,7 +42,7 @@ export const bandOf = (f: number): '2.4' | '5' => (f < 3.7e9 ? '2.4' : '5');
 export const UDEV_CMD = 'sudo cp tools/99-wsdr.rules /etc/udev/rules.d/ && sudo udevadm control --reload';
 export const LOCKED = 'End the recording to change tuning or gain';
 export const VIEW_COLOUR = ['#4fc3f7', '#c792ea'];
-export const ANT_COLOUR: [string, string] = ['#ffab70', '#8fd694']; // 8812CU: Ant 1, Ant 2
+export const ANT_COLOUR: [string, string] = ['#ffab70', '#8fd694']; // Ant 1, Ant 2
 export const SLOT_NAME = ['A', 'B'];
 
 // Per-viewer preferences (display only); storage may be unavailable.

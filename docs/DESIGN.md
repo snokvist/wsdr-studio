@@ -59,7 +59,7 @@ plugin paths, no manual driver juggling: install, plug in, open the app.
 - **Display:** spectrum (average + max-hold) and waterfall, frequency axis in MHz with channel
   markers; colour range and FFT size controls.
 - **Record:** one button, IQ + SigMF metadata.
-- **8812CU:** path A / B / both, plus the A/B coherence and phase view.
+- **Both adapters:** path A / B / both, plus the A/B coherence and phase view.
 
 ```
 ┌ wsdr-studio ─────────────────────────────────────────────────────────────────────┐

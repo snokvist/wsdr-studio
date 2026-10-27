@@ -39,7 +39,7 @@ constexpr int kGappedMaxFft = 8192; // one LA bank (BankMeta::gapped)
 struct DspConfig {
   int fft = 8192;         // 1024 .. 16384, power of two
   double rows_per_s = 25; // display rows per second (1..30)
-  int paths = 1;          // bit 0 = path A, bit 1 = path B (8812CU)
+  int paths = 1;          // bit 0 = path A, bit 1 = path B
   bool dc_remove = true;
   bool wifi = false;      // find Wi-Fi frames in the samples (engine.cpp: its own thread)
 };
@@ -74,8 +74,9 @@ public:
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
   };
 
-  // Unpack helpers (12-bit two's complement; path B lives in the upper word on the 8822C).
-  static void unpack(const uint8_t *bank, size_t samples, int path, wsdr::cf *out);
+  // Unpack one path (0 = A, 1 = B) of a bank; cu: the 8822C's word layout (BankMeta::cu), whose path B
+  // sits elsewhere than the 8822B's (wifi-sdr path_b_i/path_b_q).
+  static void unpack(const uint8_t *bank, size_t samples, int path, bool cu, wsdr::cf *out);
 
 private:
   struct Path;

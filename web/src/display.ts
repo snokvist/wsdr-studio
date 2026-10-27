@@ -18,7 +18,7 @@ export type DisplayOpts = {
   chipNotch: boolean;           // 8822C: shade its DC-rejection notch at the hardware centre (gapped rows)
   notchWide: boolean;           // 8822B at 40 MHz on 2.4 GHz: its own ~+-1 MHz centre dip (shade it)
   colour: string;               // the average trace: the view's colour
-  pathColours: [string, string] | null; // two antennas (8812CU): Ant 1, Ant 2 instead
+  pathColours: [string, string] | null; // both antennas shown: Ant 1, Ant 2 instead
   ghostColour: string;          // the other view's average (Compare): its view's colour
   showAvg: boolean; showPeak: boolean;
   overlay: string | null;       // message over the plot (stopped, starting, ...)
@@ -48,7 +48,7 @@ const isWifi = (m: Mark) => isWifiFmt(m[3]);
 export type Source = {
   lo: number; hi: number;       // the span it shows (Hz)
   colour: string;
-  pathColours: [string, string] | null; // two antennas (8812CU)
+  pathColours: [string, string] | null; // both antennas shown
   marker: number | null; markerLabel: string;
   chipNotch: boolean; notchWide: boolean;
   dim: boolean;                 // stopped: its part fades
