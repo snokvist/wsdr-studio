@@ -79,7 +79,7 @@ export type SweepPlan = { centres: number[]; rate_sel: number; fs: number; step:
 export function sweepPlan(range: Range, dev: Device | undefined, gappedOk: boolean): SweepPlan | null {
   if (!dev) return null;
   const cont = Math.min(40e6, dev.max_msps * 1e6), wide = (dev.gapped_msps ?? 0) * 1e6;
-  const fs = cont < 40e6 && gappedOk && wide >= 40e6 ? 40e6 : cont;
+  const fs = gappedOk && wide > cont ? wide : cont; // gapped: 40 MHz steps over USB 2, 80 on an 8812BU on USB 3
   const step = Math.max(5e6, Math.floor((fs * 0.875) / 5e6) * 5e6);
   const stretches: [number, number][] = [];
   for (const g of RANGES[range].groups) {
@@ -88,8 +88,10 @@ export function sweepPlan(range: Range, dev: Device | undefined, gappedOk: boole
     if (last && lo <= last[1] + 5e6) last[1] = Math.max(last[1], hi);
     else stretches.push([lo, hi]);
   }
-  // a 40 MHz span centres within 2422-2462 / 5090-6155 MHz
-  const tunable = (c: number) => (fs < 40e6 ? c : c < 3.7e9 ? Math.min(2462e6, Math.max(2422e6, c)) : Math.min(6155e6, Math.max(5090e6, c)));
+  // a 40 MHz span centres within 2422-2462 / 5090-6155 MHz, an 80 MHz one within 2442-2462 / 5110-6135 MHz
+  const clamp = (c: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, c));
+  const tunable = (c: number) =>
+    fs < 40e6 ? c : fs >= 80e6 ? (c < 3.7e9 ? clamp(c, 2442e6, 2462e6) : clamp(c, 5110e6, 6135e6)) : c < 3.7e9 ? clamp(c, 2422e6, 2462e6) : clamp(c, 5090e6, 6155e6);
   const centres: number[] = [];
   for (const [lo, hi] of stretches) {
     // the outer steps first, a MHz inside the span's flat part at the stretch's ends (its edge

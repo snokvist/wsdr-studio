@@ -16,7 +16,7 @@ export type DisplayOpts = {
   marker: number | null;        // requested frequency (Hz), drawn when it is not the band centre
   markerLabel: string;          // e.g. "requested" or "next Start"
   chipNotch: boolean;           // 8822C: shade its DC-rejection notch at the hardware centre (gapped rows)
-  notchWide: boolean;           // 8822B at 40 MHz on 2.4 GHz: its own ~+-1 MHz centre dip (shade it)
+  notchWide: boolean;           // 8822B at 40/80 MHz on 2.4 GHz: its own ~+-1 MHz centre dip (shade it)
   colour: string;               // the average trace: the view's colour
   pathColours: [string, string] | null; // both antennas shown: Ant 1, Ant 2 instead
   ghostColour: string;          // the other view's average (Compare): its view's colour

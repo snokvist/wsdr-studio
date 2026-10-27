@@ -15,7 +15,7 @@ import { SpectralMap } from './SpectralMap';
 import { survey, type Survey } from './survey';
 import { NumField, Seg } from './ui';
 import {
-  FFTS, LOCKED, SLOT_NAME, bandOf, baseName, bytes, devKey, isDual, loadPrefs, savePrefs, snap, spanLabel, type Locks, type Mode, type Prefs, type Scale,
+  FFTS, LOCKED, SLOT_NAME, bandOf, baseName, bytes, devKey, gappedDuty, isDual, loadPrefs, savePrefs, snap, spanLabel, type Locks, type Mode, type Prefs, type Scale,
 } from './util';
 
 // [keys, what, two-view modes only]
@@ -638,17 +638,21 @@ export default function App() {
                       onChange={(v) => updatePrefs({ mapDwell: Number(v) })}
                     />
                   </div>
-                  {mapDev && mapDev.max_msps < 40 && (mapDev.gapped_msps ?? 0) >= 40 && (
+                  {mapDev && (mapDev.gapped_msps ?? 0) > Math.min(40, mapDev.max_msps) && (
                     <button
                       className={prefs.mapGapped ? 'toggle on' : 'toggle'}
                       role="switch"
                       aria-checked={prefs.mapGapped}
                       onClick={() => updatePrefs({ mapGapped: !prefs.mapGapped })}
-                      title="Over USB 2 this adapter shows 40 MHz only in short slices (gapped): fewer steps, but only part of the time is sampled"
+                      title={`This adapter shows ${mapDev.gapped_msps} MHz only in short slices (gapped): fewer steps, but only part of the time is sampled`}
                     >
                       <span className="tlabel">
-                        Gapped 40 MHz steps
-                        <small>{prefs.mapGapped ? 'faster, ~21 % sampled' : `continuous ${mapDev.max_msps} MHz steps`}</small>
+                        Gapped {mapDev.gapped_msps} MHz steps
+                        <small>
+                          {prefs.mapGapped
+                            ? `faster, ~${Math.round(gappedDuty((mapDev.gapped_msps ?? 0) * 1e6, mapDev.speed_mbps >= 5000) * 100)} % sampled`
+                            : `continuous ${Math.min(40, mapDev.max_msps)} MHz steps`}
+                        </small>
                       </span>
                       <span className="switch" aria-hidden="true">
                         <i />

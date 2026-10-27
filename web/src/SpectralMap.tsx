@@ -9,7 +9,7 @@ import { TURBO } from './colormap';
 import type { Hub } from './hub';
 import type { Device } from './protocol';
 import { centre } from './channels';
-import { mhz, type Prefs, type Scale } from './util';
+import { gappedDuty, mhz, type Prefs, type Scale } from './util';
 
 const MAX_SWEEPS = 150;
 const ROW_H = 6;     // CSS px per sweep in the heatmap
@@ -350,6 +350,8 @@ export function SpectralMap(p: {
 
   const sweepS = info.last || (plan ? (plan.centres.length * (p.dwell + 150)) / 1000 : 0);
   const dwellS = p.dwell >= 1000 ? `${p.dwell / 1000} s` : `${p.dwell} ms`;
+  // a gapped step samples only part of its listen
+  const duty = plan?.gapped ? gappedDuty(plan.fs, (p.dev?.speed_mbps ?? 0) >= 5000) : 1;
   return (
     <main className="smap" aria-label="Spectral map">
       <header className="vhead maphead">
@@ -361,7 +363,9 @@ export function SpectralMap(p: {
         </span>
         {plan && (
           <span className="amber" title="A sweep visits one step at a time: what happens on a channel while the sweep is elsewhere is not seen. A map cell holds the peak (or mean) of that listen.">
-            each channel heard {dwellS} of every {sweepS.toFixed(1)} s ({Math.round((p.dwell / 1000 / Math.max(0.1, sweepS)) * 100)} %)
+            each channel heard {dwellS}
+            {duty < 1 ? ` (~${Math.round(duty * 100)} % sampled)` : ''} of every {sweepS.toFixed(1)} s (
+            {Math.round(((duty * p.dwell) / 1000 / Math.max(0.1, sweepS)) * 100)} %)
             <span className="long">: bursts between visits are missed</span>
           </span>
         )}

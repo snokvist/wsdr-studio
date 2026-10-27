@@ -38,17 +38,23 @@ test('sweep plans: every channel MHz inside a step, centres unique and tunable, 
     ['8812BU on USB 3', dev(40), false],
     ['8812BU on USB 2', dev(5, 40), false],
     ['8812BU on USB 2, gapped allowed', dev(5, 40), true],
+    ['8812BU on USB 3, gapped 80 offered', dev(40, 80), false],
+    ['8812BU on USB 3, gapped 80 allowed', dev(40, 80), true],
   ];
   for (const [name, d, gappedOk] of cases)
     for (const r of ranges) {
       const p = sweepPlan(r, d, gappedOk)!;
       assert.equal(new Set(p.centres).size, p.centres.length, `${name} ${r}: unique centres`);
-      assert.equal(p.gapped, gappedOk && d.max_msps < 40, `${name} ${r}: gapped only when allowed`);
+      assert.equal(p.gapped, gappedOk && (d.gapped_msps ?? 0) > Math.min(40, d.max_msps), `${name} ${r}: gapped only when allowed`);
+      if (p.gapped) assert.equal(p.fs, (d.gapped_msps ?? 0) * 1e6, `${name} ${r}: the widest gapped span`);
       assert.equal(80e6 / (1 << p.rate_sel), p.fs, `${name} ${r}: rate matches the span`);
-      if (p.fs >= 40e6)
+      if (p.fs === 40e6)
         for (const c of p.centres) assert.ok(c < 3.7e9 ? c >= 2422e6 && c <= 2462e6 : c >= 5090e6 && c <= 6155e6, `${name} ${r}: ${c / 1e6} tunable at 40 MHz`);
-      // a margin inside the capture where the filter is flat (none for 5 MHz steps: they only abut)
-      const margin = p.fs >= 20e6 ? 1e6 : 0;
+      if (p.fs === 80e6)
+        for (const c of p.centres) assert.ok(c < 3.7e9 ? c >= 2442e6 && c <= 2462e6 : c >= 5110e6 && c <= 6135e6, `${name} ${r}: ${c / 1e6} tunable at 80 MHz`);
+      // a margin inside the capture where the filter is flat (none for 5 MHz steps: they only abut;
+      // 80 MHz: the -6 dB edges are at about +-37.5 MHz)
+      const margin = p.fs >= 80e6 ? 2.5e6 : p.fs >= 20e6 ? 1e6 : 0;
       for (const g of RANGES[r].groups)
         for (let f = centre(g.chans[0]) - g.half + 0.5e6; f < centre(g.chans[g.chans.length - 1]) + g.half; f += 1e6)
           assert.ok(p.centres.some((c) => Math.abs(f - c) <= p.fs / 2 - margin && Math.abs(f - c) <= p.step / 2 + 2.5e6), `${name} ${r}: ${f / 1e6} MHz heard`);

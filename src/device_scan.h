@@ -22,7 +22,7 @@ struct DeviceInfo {
   std::string driver;     // kernel driver bound to interface 0, empty if none
   bool can_open = false;  // the device node is readable and writable by us
   double max_msps = 0;    // what the link allows continuously (40 on USB 3 for the 8812BU, else 5)
-  double gapped_msps = 0; // wider spans in gapped mode (8812CU, 8812BU on USB 2: 40), 0 = none
+  double gapped_msps = 0; // widest gapped span: 40 (8812CU, 8812BU on USB 2), 80 (8812BU on USB 3)
 };
 
 std::vector<DeviceInfo> scan_devices();
