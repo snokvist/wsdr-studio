@@ -194,7 +194,7 @@ json Engine::run(const json &c) {
     if (c.contains("freq"))
       s.freq = num(c, "freq", 2.3e9, 6.2e9);
     if (c.contains("rate_sel"))
-      s.rate_sel = integer(c, "rate_sel", 1, 5);
+      s.rate_sel = integer(c, "rate_sel", 0, 5); // 0: 80 MS/s, gapped only (the Receiver clamps to its caps)
     // a gapped span only when asked for: a span change without it is a continuous one (the widest the
     // adapter carries, if it asks for more); a change of anything else keeps what the view has
     if (c.contains("allow_gapped"))
@@ -348,7 +348,7 @@ void Engine::open_adapter(uint16_t pid, const json &c) {
   }
   wsdr::RxSettings s;
   s.freq = c.contains("freq") ? num(c, "freq", 2.3e9, 6.2e9) : 5180e6;
-  s.rate_sel = c.contains("rate_sel") ? integer(c, "rate_sel", 1, 5) : (pid == wsdr::kPid8812cu ? 4 : 2);
+  s.rate_sel = c.contains("rate_sel") ? integer(c, "rate_sel", 0, 5) : (pid == wsdr::kPid8812cu ? 4 : 2);
   int bus = c.contains("bus") ? integer(c, "bus", 0, 255) : -1;
   std::string port;
   if (c.contains("port")) {
@@ -541,7 +541,7 @@ void Engine::set_view(const wsdr::RxSettings &view, const wsdr::RxSettings &hw) 
     std::lock_guard<std::mutex> l(_sm);
     _view = offset ? view : hw; // not offset: the radio's own (clamped) settings are the view
   }
-  const int w = wsdr::Receiver::width_of(hw, false);
+  const int w = wsdr::Receiver::width_of(hw, _caps.cu);
   Crop c;
   c.hw_centre = wsdr::Receiver::centre_of(wsdr::Receiver::channel_for(hw.freq, w), w);
   c.hw_fs = wsdr::Receiver::rate_of(hw.rate_sel);
@@ -615,7 +615,7 @@ json Engine::status() const {
     const wsdr::RxSettings hw = hw_for(v);
     if (hw.freq != v.freq || hw.rate_sel != v.rate_sel) { // offset-tuned: report the view, and the radio
       j["rx"]["offset"] = true;
-      const int w = wsdr::Receiver::width_of(hw, false); // the radio's settings (not the run still ending)
+      const int w = wsdr::Receiver::width_of(hw, _caps.cu); // the radio's settings (not the run still ending)
       j["rx"]["hw_centre"] = wsdr::Receiver::centre_of(wsdr::Receiver::channel_for(hw.freq, w), w);
       j["rx"]["hw_fs"] = wsdr::Receiver::rate_of(hw.rate_sel);
       j["rx"]["centre"] = v.freq;

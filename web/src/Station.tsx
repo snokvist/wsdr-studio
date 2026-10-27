@@ -360,6 +360,8 @@ export function Station(p: {
   const fsNow = 80e6 / (1 << cur.rate_sel);
   const chan = channelAt(cur.freq, 20); // by centre frequency only (the span does not pick a channel)
   const rates: Rate[] = caps.rates ?? ratesFor(sel, prefs.offsetTuning);
+  const usb3 = caps.superspeed ?? (sel?.speed_mbps ?? 0) >= 5000; // a gapped bank ships ~7x faster
+  const contMax = Math.max(0, ...rates.filter((r) => !r.gapped).map((r) => r.fs)); // widest continuous span
   // the selected span (follows a change at once; the badge shows the run's measured share)
   const gapped = rates.find((r) => r.rate_sel === cur.rate_sel)?.gapped ?? false;
   const run = status?.rx;
@@ -647,7 +649,7 @@ export function Station(p: {
   const lockTitle = locked ? LOCKED : undefined;
   const runGapped = !!run?.gapped;
   const recTitle = !recording && gapped
-    ? 'Recording needs a continuous span (5 MHz or less on this adapter); gapped spans sample only part of the time'
+    ? `Recording needs a continuous span (${spanLabel(contMax)} or less on this adapter); gapped spans sample only part of the time`
     : !recording && rxState !== 'streaming'
       ? 'Available while streaming'
       : recording && status
@@ -710,7 +712,7 @@ export function Station(p: {
         {(open || sel) && (
           <span className="note" title={diskFree ? `${bytes(diskFree)} free where recordings go` : undefined}>
             {gapped
-              ? 'Recording needs a continuous span (5 MHz or less here)'
+              ? `Recording needs a continuous span (${spanLabel(contMax)} or less here)`
               : `Recording: ${bytes(recRate)}/s${diskFree ? ` · room for ~${fmtDur(secsLeft)}` : ''}`}
           </span>
         )}
@@ -731,24 +733,27 @@ export function Station(p: {
             }}
             title={`Bandwidth shown = sample rate (complex IQ). This adapter: up to ${spanLabel(Math.max(...rates.map((r) => r.fs)))}${
               rates.some((r) => r.gapped)
-                ? '. "gapped": wider than USB 2 can carry continuously; the adapter captures short slices (spectrum and waterfall, no recording)'
+                ? '. "gapped": wider than the USB link can carry continuously; the adapter captures short slices (spectrum and waterfall, no recording)'
                 : ''
             }`}
           >
             {rates.map((r) => (
               <option key={r.rate_sel} value={r.rate_sel}>
-                {r.gapped ? `${spanLabel(r.fs)} · gapped ~${Math.round(gappedDuty(r.hw_fs ?? r.fs) * 100)} %` : `${spanLabel(r.fs)} · ${r.fs / 1e6} MS/s`}
+                {r.gapped ? `${spanLabel(r.fs)} · gapped ~${Math.round(gappedDuty(r.hw_fs ?? r.fs, usb3) * 100)} %` : `${spanLabel(r.fs)} · ${r.fs / 1e6} MS/s`}
               </option>
             ))}
           </select>
           {gapped && (
             <span className="note">
-              Gapped: the adapter captures short slices of this span and ships each over USB 2, so only part of the time is
+              Gapped: the adapter captures short slices of this span and ships each over USB, so only part of the time is
               seen. Spectrum and waterfall, no recording.
             </span>
           )}
           {fsNow >= 40e6 && bandOf(cur.freq) === '2.4' && (
-            <span className="note">A 40 MHz span centres between 2422 and 2462 MHz: the requested frequency is marked on the plot.</span>
+            <span className="note">
+              {fsNow >= 80e6 ? 'An 80 MHz span centres between 2442 and 2462 MHz' : 'A 40 MHz span centres between 2422 and 2462 MHz'}: the
+              requested frequency is marked on the plot.
+            </span>
           )}
           {chip.includes('8822C') &&
             toggle(
@@ -897,7 +902,7 @@ export function Station(p: {
                 </>
               )
             : gapped
-              ? '● Rec · ≤ 5 MHz'
+              ? `● Rec · ≤ ${spanLabel(contMax)}`
               : '● Rec'}
         </button>
       </header>

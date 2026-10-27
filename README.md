@@ -10,7 +10,9 @@ dongles it shows two views side by side on one axis (Panorama) or stacked on the
   up by [devourer](https://github.com/OpenIPC/devourer). A C++ backend owns the dongle and computes
   the spectrum; the UI (React) runs in a bundled Electron window. No browser needs to be installed.
 - **What you get:**
-  - 8812BU on USB 3: spans of 2.5–40 MHz, and the full 40 MHz band at 40 MS/s.
+  - 8812BU on USB 3: spans of 2.5–40 MHz, and the full 40 MHz band at 40 MS/s. Also an 80 MHz span,
+    gapped: one 8192-sample slice at 80 MS/s (~77 MHz at −6 dB), ~0.2 ms to ship it, ~33 % of the time
+    sampled. The chip's 80 MHz filter has a ~±2.5 dB ripple across the band.
   - 8812BU on USB 2, or the 8812CU: 2.5 and 5 MHz continuous (the 8812BU is normally switched to USB 3
     at Start, see below).
   - 8812CU (and an 8812BU left at USB 2), gapped: 10, 20 and 40 MHz spans listed as "gapped" in the Span list. The dongle captures
@@ -124,6 +126,9 @@ The window needs at least 1280 × 720.
 - **Spectral Map**: pick the range and how long each step is listened to (120 ms, 250 ms, 1 s) in
   the sidebar. Each channel is heard only while the sweep is on it; the header says how long of how
   often. A click on a channel leaves the map onto it; leaving puts both views back as they were.
+  "Gapped N MHz steps" (8812CU or USB 2: 40 MHz; 8812BU on USB 3: 80 MHz) takes fewer, wider steps:
+  all of 5 GHz in 11 steps of 80 MHz (~3.2 s a sweep) instead of 21 of 40 MHz (~6 s), but only part
+  of each listen is sampled.
 - **Mark signals** (Display, Single and Compare, 20 and 40 MHz spans): the app finds Wi-Fi frames in
   the samples themselves (their preamble, then the legacy header: rate, length, airtime, and whether
   it is 802.11n or ac; at 2.4 GHz also 802.11b) and marks each on the waterfall at its channel's

@@ -7,7 +7,7 @@ export type Rate = { rate_sel: number; fs: number; gapped?: boolean; hw_fs?: num
 export type Device = {
   pid: number; model: string; chip: string; bus: number; port: string; speed_mbps: number;
   controller: string; driver: string; can_open: boolean; max_msps: number;
-  gapped_msps?: number; // wider spans in gapped mode (8812CU), 0 = none
+  gapped_msps?: number; // widest span in gapped mode (40; 80 on an 8812BU on USB 3), 0 = none
 };
 export type Caps = {
   open: boolean; adapter?: string; pid?: number; bus?: number; port?: string; chip?: string; superspeed?: boolean; paths?: number;

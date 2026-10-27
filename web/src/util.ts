@@ -5,7 +5,7 @@ import type { Channel } from './channels';
 import type { Device, Rate } from './protocol';
 
 export const FFTS = [1024, 2048, 4096, 8192, 16384];
-export const RATES: Rate[] = [5, 4, 3, 2, 1].map((r) => ({ rate_sel: r, fs: 80e6 / (1 << r) }));
+export const RATES: Rate[] = [5, 4, 3, 2, 1, 0].map((r) => ({ rate_sel: r, fs: 80e6 / (1 << r) }));
 // What an adapter offers before Start (after Start the backend's caps say it).
 export const ratesFor = (d: Device | undefined, offsetTuning: boolean): Rate[] =>
   d
@@ -15,8 +15,9 @@ export const ratesFor = (d: Device | undefined, offsetTuning: boolean): Rate[] =
         return { ...r, gapped, hw_fs: gapped && offsetTuning && d.chip.includes('8822C') && r.fs <= 20e6 ? 40e6 : r.fs };
       })
     : RATES;
-// Share of the time a gapped span samples: one 8192-sample bank, then ~1.48 ms shipping it over USB 2.
-export const gappedDuty = (fs: number) => 8192 / fs / (8192 / fs + 1.48e-3);
+// Share of the time a gapped span samples: one 8192-sample bank, then shipping it: ~1.48 ms over USB 2,
+// ~205 us over USB 3 (measured at 80 MS/s: 33 %).
+export const gappedDuty = (fs: number, usb3 = false) => 8192 / fs / (8192 / fs + (usb3 ? 0.205e-3 : 1.48e-3));
 export const mhz = (hz: number, d = 1) => (hz / 1e6).toFixed(d);
 export const spanLabel = (fs: number) => `${fs / 1e6} MHz`;
 export const devKey = (d: Device) => `${d.bus}-${d.port}`;
