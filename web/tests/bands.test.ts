@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { RANGES, freqAt, pos, sweepPlan, type Range } from '../src/bands';
 import type { Device, Row } from '../src/protocol';
-import { centre, survey } from '../src/survey';
+import { CHANNELS, centre } from '../src/channels';
+import { survey } from '../src/survey';
 
 const ranges = Object.keys(RANGES) as Range[];
 const dev = (max_msps: number, gapped_msps = 0, pid = 0xb812): Device => ({
@@ -54,6 +55,26 @@ test('sweep plans: every channel MHz inside a step, centres unique and tunable, 
     }
 });
 
+test('channels 68-96: cells between UNII-2 and UNII-2e, swept straight through', () => {
+  for (const r of ['5', 'u12', 'u2e'] as Range[]) {
+    const chans = RANGES[r].groups.flatMap((g) => g.chans);
+    // no break: each channel's cell starts where the one before it ends
+    for (let i = 1; i < chans.length; i++)
+      if (chans[i - 1] >= 64 && chans[i] <= 100)
+        assert.ok(Math.abs(pos(r, centre(chans[i]) - 10e6) - pos(r, centre(chans[i - 1]) + 10e6)) < 1e-9, `${r}: ch ${chans[i - 1]} | ${chans[i]}`);
+  }
+  const p = sweepPlan('5', dev(40), false)!;
+  for (let f = 5330e6; f <= 5490e6; f += 1e6) assert.ok(p.centres.some((c) => Math.abs(f - c) <= 19e6), `${f / 1e6} MHz swept`);
+});
+
+test('the header and marker channels are the ruler cells', () => {
+  for (const band of ['2.4', '5'] as const)
+    assert.deepEqual(
+      CHANNELS.filter((c) => c.width === 20 && c.band === band).map((c) => c.ch),
+      RANGES[band].groups.flatMap((g) => g.chans),
+    );
+});
+
 test('sweep plans: no adapter, no plan', () => {
   assert.equal(sweepPlan('5', undefined, false), null);
 });
@@ -77,6 +98,13 @@ test('survey: noise alone stays near 0 dB; a channel with a signal stands out', 
   for (let i = 0; i < 4; i++) survey(s, Object.assign(row(5190e6, [[5172e6, 5188e6, -50]]), { t: i * 0.2 }));
   assert.ok((s.get(36) ?? 0) > 20, `ch 36 with a -50 dBFS block: ${s.get(36)}`);
   assert.ok((s.get(44) ?? 0) < 6, `ch 44, noise only: ${s.get(44)}`);
+});
+
+test('survey: covers the ruler cells outside Wi-Fi too (ch 68-96)', () => {
+  const s = new Map<number, number>();
+  for (let i = 0; i < 4; i++) survey(s, Object.assign(row(5370e6, [[5352e6, 5368e6, -50]]), { t: i * 0.2 }));
+  assert.ok((s.get(72) ?? 0) > 20, `ch 72 with a -50 dBFS block: ${s.get(72)}`);
+  assert.ok((s.get(80) ?? 0) < 6, `ch 80, noise only: ${s.get(80)}`);
 });
 
 test('survey: one row alone does not count (two rows must agree)', () => {

@@ -787,7 +787,7 @@ export class Display {
           const text = f.toFixed(fstep < 1 ? 1 : 0), half = c.measureText(text).width / 2;
           if (x - half >= L - 2 * d && x + half <= W) c.fillText(text, x, ph + B / 2);
         }
-        // Wi-Fi channel markers (20 MHz channels), while they are at least ~30 px apart
+        // channel markers (the 20 MHz channels, 68-96 included), while they are at least ~30 px apart
         c.fillStyle = '#5c6b7a';
         c.textBaseline = 'top';
         for (const ch of 20 * pxPerMHz >= 30 * d ? channelsIn(q.f0, q.f1) : []) {

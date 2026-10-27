@@ -8,7 +8,7 @@ import { RANGES, freqAt, pos, sweepPlan, type Range } from './bands';
 import { TURBO } from './colormap';
 import type { Hub } from './hub';
 import type { Device } from './protocol';
-import { centre } from './survey';
+import { centre } from './channels';
 import { mhz, type Prefs, type Scale } from './util';
 
 const MAX_SWEEPS = 150;

@@ -1,17 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // The band ruler's survey: per channel, the strongest peak seen over the noise (dB), kept for the
 // session.
-import type { Row } from './protocol';
+import { RANGES } from './bands';
 import { centre } from './channels';
+import type { Row } from './protocol';
 
-// the channels surveyed, with a cell's half-width
-type Seg = { chans: number[]; half: number };
-const LOW: Seg = { chans: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13], half: 2.5e6 };
-const HIGH: Seg = {
-  half: 10e6,
-  chans: [36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, 149, 153, 157, 161, 165, 169, 173, 177],
-};
-export { centre }; // the band ruler and the sweep plans take it from here
+// the channels surveyed: every band ruler cell, with the half-width of the slice measured
+const SEGS = [
+  { chans: RANGES['2.4'].groups.flatMap((g) => g.chans), half: 2.5e6 },
+  { chans: RANGES['5'].groups.flatMap((g) => g.chans), half: 9e6 },
+];
 
 export type Survey = Map<number, number>;
 // Each cell's own slice (2.4 GHz: its 5 MHz, so one AP does not light up nine overlapping channels;
@@ -45,9 +43,9 @@ export function survey(s: Survey, r: Row) {
   };
   let prev = pending.get(s);
   if (!prev) pending.set(s, (prev = new Map()));
-  for (const seg of [LOW, HIGH])
-    for (const c of seg.chans) {
-      const fc = centre(c), half = seg === LOW ? seg.half : 9e6;
+  for (const { chans, half } of SEGS)
+    for (const c of chans) {
+      const fc = centre(c);
       if (fc < f0 - 1e6 || fc > f1 + 1e6) continue; // its centre must be on the axis
       const b0 = Math.max(0, Math.ceil((fc - half - f0) / r.df)), b1 = Math.min(r.bins - 1, Math.floor((fc + half - f0) / r.df));
       if (b1 < b0) continue;

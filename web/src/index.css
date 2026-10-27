@@ -233,6 +233,8 @@ button.rcell > span { margin-bottom: 3px; display: flex; flex-direction: column;
 button.rcell small { font-size: 10px; color: var(--muted); }
 .rbar { position: absolute; left: 50%; bottom: 1px; height: 3px; transform: translateX(-50%); border-radius: 2px; background: #eef2f6; pointer-events: none; }
 button.rcell:disabled { opacity: 0.6; cursor: not-allowed; }
+/* a cell outside the Wi-Fi channels (68-96): receive only, dashed and hatched */
+button.rcell.out { border-style: dashed; background: repeating-linear-gradient(135deg, #121921 0 6px, #161e28 6px 12px); }
 /* a view's bracket: drawn only; its tab (label row) selects it, the cells under it stay clickable */
 .rview { position: absolute; top: 17px; height: 38px; border: 1px solid; border-radius: 4px; pointer-events: none; opacity: 0.6; }
 .rview.sel { opacity: 1; border-width: 2px; }
