@@ -28,7 +28,7 @@ dongles it shows two views side by side on one axis (Panorama) or stacked on the
     spans; at its narrower spans the chip only drops samples, so there they are two separate views.
   - Fixed gain or the chip's AGC, and raw IQ recording (SigMF).
 - **Receive only.** The app never transmits.
-- **Platform:** Linux, x86-64, glibc ≥ 2.34 (Ubuntu 22.04 or newer and similar).
+- **Platform:** Linux, x86-64, glibc ≥ 2.34 (Ubuntu 22.04 or newer and similar; libstdc++ is built in).
 
 ## Screenshots
 
@@ -55,10 +55,11 @@ shaded slot at A's centre is the 8812CU's own notch.
    ```
 2. **Allow your user to open the dongles** (once, needs root), then unplug and replug the dongle:
    ```sh
-   sudo tee /etc/udev/rules.d/99-wsdr.rules > /dev/null <<'RULES'
+   sudo tee /etc/udev/rules.d/70-wsdr.rules > /dev/null <<'RULES'
    SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="b812", TAG+="uaccess", MODE="0660", GROUP="plugdev"
    SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="c812", TAG+="uaccess", MODE="0660", GROUP="plugdev"
    RULES
+   sudo rm -f /etc/udev/rules.d/99-wsdr.rules   # (the rule's old name, if an earlier setup left it)
    sudo udevadm control --reload
    ```
 3. **Optional: keep the kernel's Wi-Fi driver off the dongles.** Start takes a dongle over from the
@@ -90,8 +91,10 @@ runs without that sandbox. The window only ever loads the app's own page from 12
 new windows and permissions are locked down), so no outside web content is ever shown in it.
 
 **One-time setup** (needs root; see the quick start):
-- **USB access:** the udev rule above (the same as wifi-sdr's `tools/99-wsdr.rules`). Without it the
-  app shows a "cannot open it" card with the command to run and a Copy button.
+- **USB access:** the udev rule above (the same as wifi-sdr's `tools/70-wsdr.rules`; its number keeps
+  it before `73-seat-late.rules`, where `uaccess` is applied, so the logged-in user gets access on
+  every distribution, `plugdev` or not). Without it the app shows a "cannot open it" card with the
+  command to run and a Copy button.
 - **Kernel drivers:** the in-kernel drivers (rtw88_8822bu/cu) claim the dongle on plug-in; Start
   takes it over. The blacklist in the quick start (or wifi-sdr's `tools/rtw88_guard.sh on`) keeps
   them away for good.
@@ -181,8 +184,14 @@ The window needs at least 1280 × 720.
   only 2.5 and 5 MHz continuous): use a USB 3 port and cable (SuperSpeed, often blue), then replug.
   Until then the wider spans are offered as "gapped" only.
 - **"stream restarted after a fault"** in a view's footer: the stream stopped and was started again
-  by itself (a short gap). It disappears a minute after the last one; if it keeps coming, replug the
-  dongle.
+  by itself (a short gap). It disappears a minute after the last one. The reason is logged in
+  `~/.config/wsdr-studio/backend.log` (this launch's backend output). At 40 MS/s on the 8812BU the
+  usual one is a bank shipped a few microseconds late: the USB link has little margin there, and a
+  busy computer makes it more likely; it is not the second dongle. If it keeps coming, replug the
+  dongle or try another USB 3 port.
+- **Settings reset / a blank window:** the preferences live in `~/.config/wsdr-studio/prefs.json`
+  (not in the page's storage, so they survive the backend moving to another port). A page that
+  crashes is loaded again by itself; `backend.log` says so.
 - **Unplugged by accident:** plug it back in; the view starts again by itself.
 - **The two dongles' levels differ** in Compare: two units of the same model can read several dB
   apart. The app shows each as it is.
@@ -221,9 +230,10 @@ instance: security gates, protocol, a retune, and a recording.
 The backend listens on 127.0.0.1 only and checks every request's `Host` header against DNS rebinding.
 - **The WebSocket** needs the per-launch session token (`?t=`), and a browser's `Origin` must be the
   app's own.
-- **The token is never in a URL or on a command line.** The backend prints it once on a private pipe to
-  the Electron shell, which hands it to its own page over IPC (the page cannot get it any other way;
-  no HTTP endpoint returns it, no cookies). Scripts read it from a private per-user file
+- **The token is never in a page URL, on a command line or in an HTTP response.** The backend prints
+  it once on a private pipe to the Electron shell, which hands it to its own page over IPC (the page
+  cannot get it any other way; no HTTP endpoint returns it, no cookies); the page then presents it on
+  the WebSocket upgrade only. Scripts read it from a private per-user file
   (`$XDG_RUNTIME_DIR/wsdr-studio/instance`, mode 0600).
 - **The window is locked to the app:** context isolation, sandboxed renderer, no Node in the page,
   navigation only within the app's origin, no new windows, no permissions except writing the
@@ -234,9 +244,9 @@ The backend listens on 127.0.0.1 only and checks every request's `Host` header a
 
 | Path | What |
 |---|---|
-| `src/` | backend: `engine` (adapter, DSP thread, recorder), `dsp` (FFT), `server` (HTTP/WebSocket), `protocol`, `recorder` (SigMF), `device_scan` |
-| `web/` | React + TypeScript UI (Vite): `App.tsx` shell (modes, sidebar, links), `Station.tsx` one view, `display.ts` spectrum + waterfall (also the stitched Panorama), `BandRuler.tsx` + `bands.ts` the channel axis, `SpectralMap.tsx` the sweep, `hub.ts` the shared socket |
-| `desktop/` | Electron shell: `main.js` (starts the backend, window, lock-down), `preload.js` (token bridge) |
+| `src/` | backend: `engine` (adapter, DSP thread, recorder, the Wi-Fi thread), `dsp` (FFT), `wifi` (the Wi-Fi frame finder and decoder), `signals` (other signals: video, Bluetooth, ...), `server` (HTTP/WebSocket), `protocol`, `recorder` (SigMF), `device_scan` |
+| `web/` | React + TypeScript UI (Vite): `App.tsx` shell (modes, sidebar, links), `Station.tsx` one view, `display.ts` spectrum + waterfall (also the stitched Panorama) and the signal marks, `Panorama.tsx`, `Constellation.tsx` the frame inspector, `BandRuler.tsx` + `bands.ts` + `channels.ts` the channel axis, `survey.ts` its per-channel survey, `SpectralMap.tsx` the sweep, `hub.ts` the shared socket |
+| `desktop/` | Electron shell: `main.js` (starts the backend, window, lock-down; `backend.log` and `prefs.json` in `~/.config/wsdr-studio`), `preload.js` (token and preferences bridge) |
 | `external/wifi-sdr` | the receive core (submodule; brings devourer) |
 | `docs/` | design and build plan |
 | `tests/` | unit tests (C++), the end-to-end checks against a running app (`e2e.mjs` view A, `e2e-dual.mjs` view B); `web/tests` the UI's unit tests (`npm test`) |

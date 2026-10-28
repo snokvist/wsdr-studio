@@ -30,8 +30,8 @@ export type DisplayOpts = {
 // The marks' colours by frame format, apart from the waterfall's colour scale (white legacy OFDM,
 // magenta 11n, lavender 11ac, pale yellow 802.11b; the switch's caption names each; a dark border
 // keeps them visible on any colour)
-export const WIFI_COLOUR = { L: '#ffffff', H: '#ff4fd8', V: '#c4a7ff', B: '#fff59d' } as const;
-const WIFI_NAME = { L: 'legacy', H: '11n', V: '11ac', B: '11b' } as const;
+export const WIFI_COLOUR = { L: '#ffffff', H: '#ff4fd8', V: '#c4a7ff', X: '#7fd3ff', B: '#fff59d' } as const;
+const WIFI_NAME = { L: 'legacy', H: '11n', V: '11ac', X: '11ax/be', B: '11b' } as const;
 // other signals share one colour (aquamarine); the hover names their kind
 export const OTHER_COLOUR = '#7fffd4';
 const OTHER_NAME = { T: 'Bluetooth', N: 'narrowband', M: 'microwave oven', E: 'BLE advertising', C: 'steady carrier' } as const;
@@ -114,6 +114,8 @@ export class Display {
   private ghost: Row | null = null;           // the other view's newest row (dual mode)
   private ghostSm: Float32Array | null = null; // ... its average, smoothed like ours
   private ghostAt = 0;                         // when it last arrived (a stopped view's trace expires)
+  private ghostAAt = 0;                        // when its Ant 1 row last arrived (Ant 2 rows stand in only without one)
+  private skipped = false;                     // rows went by while the plots were hidden (another mode)
   onHint: (text: string) => void = () => {};
   private dpr = 1;
   private off: (() => void)[] = [];
@@ -132,6 +134,13 @@ export class Display {
     this.wfo = document.createElement('canvas');
     this.wfo.style.cssText = 'position:absolute;pointer-events:none';
     wf.parentElement?.appendChild(this.wfo);
+    // the overlay follows the waterfall: its size (resize) and its place when a strip above it appears
+    const strips = wf.parentElement?.querySelector('.strips');
+    if (strips) {
+      const ro = new ResizeObserver(() => this.placeSeps());
+      ro.observe(strips);
+      this.off.push(() => ro.disconnect());
+    }
     const on = <K extends keyof HTMLElementEventMap>(el: HTMLElement, ev: K, fn: (e: HTMLElementEventMap[K]) => void) => {
       el.addEventListener(ev, fn);
       this.off.push(() => el.removeEventListener(ev, fn));
@@ -174,7 +183,7 @@ export class Display {
       }
       this.raf = requestAnimationFrame(loop); // first: a failing draw must not end the loop
       if ((window.devicePixelRatio || 1) !== this.dpr && this.wf.clientWidth && this.wf.clientHeight) this.resize(); // moved to a screen of another scale
-      if (this.dirty) this.drawSpectrum();
+      if (this.dirty && this.sp.clientWidth) this.drawSpectrum(); // hidden (Panorama, Map): drawn when shown again
     };
     this.raf = requestAnimationFrame(loop);
   }
@@ -244,18 +253,24 @@ export class Display {
     }
     this.wfo.width = wf.width;
     this.wfo.height = wf.height;
+    this.placeSeps();
     this.drawSeps();
     this.drawGutter();
     this.dirty = true;
   }
 
-  private drawSeps() {
-    // follows the waterfall (a strip appearing above it moves it without resizing it)
+  // the overlay over the waterfall (on a layout change only: reading the layout on every row would
+  // force one)
+  private placeSeps() {
     const o = this.wfo, wf = this.wf;
     o.style.left = `${wf.offsetLeft + wf.clientLeft}px`;
     o.style.top = `${wf.offsetTop + wf.clientTop}px`;
     o.style.width = `${wf.clientWidth}px`;
     o.style.height = `${wf.clientHeight}px`;
+  }
+
+  private drawSeps() {
+    const o = this.wfo;
     const c = o.getContext('2d')!, d = this.dpr, L = this.plotLeft();
     c.clearRect(0, 0, this.wfo.width, this.wfo.height);
     c.font = `${11 * d}px system-ui, sans-serif`;
@@ -365,6 +380,11 @@ export class Display {
       this.ghost = null;
       this.ghostSm = null;
     } else {
+      // the other view's Ant 1 (the one its waterfall shows), or Ant 2 when it shows that alone: never
+      // the two blended
+      const now = performance.now();
+      if (r.path === 0) this.ghostAAt = now;
+      else if (now - this.ghostAAt < 1500) return;
       const g = this.ghost;
       const same = g && g.bins === r.bins && Math.abs(g.f0 - r.f0) < r.df / 2 && Math.abs(g.df - r.df) < 1e-6;
       if (!same || !this.ghostSm) this.ghostSm = Float32Array.from(r.avg);
@@ -441,7 +461,10 @@ export class Display {
     const a = this.opts.smooth;
     if (!sm || a <= 0) this.smoothed[k] = Float32Array.from(r.avg);
     else for (let i = 0; i < r.bins; i++) sm[i] = a * sm[i] + (1 - a) * r.avg[i];
-    if (shown) this.drawWaterfallRow(r);
+    if (shown) {
+      if (this.wf.clientWidth) this.drawWaterfallRow(r);
+      else this.skipped = true; // hidden (Panorama, Map): the stitched plot or the map shows the rows
+    }
     this.dirty = true;
   }
 
@@ -590,7 +613,7 @@ export class Display {
     const span = this.opts.stitch
       ? this.axis(w).map((q) => `${(q.f0 / 1e6).toFixed(3)}–${(q.f1 / 1e6).toFixed(3)}`).join(', ') + ' MHz'
       : label(r);
-    if (this.wfSpan && (span !== this.wfSpan || this.stopPending)) {
+    if (this.wfSpan && (span !== this.wfSpan || this.stopPending || this.skipped)) {
       // A retune, span change or new run: a separator. The label describes the OLD rows below it (the
       // new rows above match the axis), so nothing below the line is misread.
       const d = this.dpr;
@@ -598,10 +621,13 @@ export class Display {
         ? span === this.wfSpan
           ? '▼ Stop (gap)' // same tuning: only the time gap needs marking
           : `▼ before Stop: ${this.wfSpan} (not on this axis)`
-        : `▼ before: ${this.wfSpan} (not on this axis)`;
+        : span === this.wfSpan
+          ? '▼ gap: rows not shown meanwhile (another mode)'
+          : `▼ before: ${this.wfSpan} (not on this axis)`;
       if (this.stopPending) this.stopRows = 0;
       if (span !== this.wfSpan) this.sepRows = 0; // a Stop at the same span keeps the frequency axis
       this.stopPending = false;
+      this.skipped = false;
       c.fillStyle = '#ffffff';
       c.fillRect(L, 0, w, Math.max(1, Math.round(d)));
       // quick changes in a row: one label for them, not a stack
@@ -897,10 +923,11 @@ export class Display {
             c.textBaseline = 'top';
             const label = v.src.notchWide ? 'centre dip (8812BU, 40 MHz on 2.4 GHz)' : 'chip notch: what the adapter itself sees';
             const lw = c.measureText(label).width;
+            const ly = T + (st ? 40 : 22) * d; // stitched: under the seam label, which sits where the notch may
             c.fillStyle = 'rgba(11,14,19,0.85)';
-            c.fillRect((x0 + x1) / 2 - lw / 2 - 4 * d, T + 22 * d, lw + 8 * d, 14 * d);
+            c.fillRect((x0 + x1) / 2 - lw / 2 - 4 * d, ly, lw + 8 * d, 14 * d);
             c.fillStyle = '#a3aebb';
-            c.fillText(label, (x0 + x1) / 2, T + 24 * d);
+            c.fillText(label, (x0 + x1) / 2, ly + 2 * d);
             c.textBaseline = 'middle';
           }
         }
@@ -1034,21 +1061,30 @@ export class Display {
         }
       }
       // the other view (dual mode), when it shows the same axis
-      const own = this.first();
+      // (drawn by frequency, where its range meets this axis: its bins need not be ours, e.g. a view cut
+      // from a 40 MHz capture beside one that is not)
       const g = this.ghost, gs = this.ghostSm;
-      const ghostOn = !!(g && gs && own && performance.now() - this.ghostAt < 1500 && g.bins === own.bins && Math.abs(g.f0 - own.f0) < own.df / 2 && Math.abs(g.df - own.df) < 1e-6);
-      if (ghostOn && g && gs) {
+      const gr = g ? Display.range(g) : null;
+      const ghostOn = !!(g && gs && gr && performance.now() - this.ghostAt < 1500 && gr.hi > s.f0 && gr.lo < s.f1);
+      if (ghostOn && g && gs && gr) {
         c.globalAlpha = stale || this.opts.dim ? 0.35 : 0.9;
         c.strokeStyle = this.opts.ghostColour;
         c.lineWidth = 1.1 * d;
         c.beginPath();
+        let pen = false;
         for (let x = 0; x < w; x++) {
-          const b0 = Math.floor((x * g.bins) / w), b1 = Math.max(b0 + 1, Math.floor(((x + 1) * g.bins) / w));
+          const at = Display.fAt(ax, x);
+          if (!at || at.f < gr.lo || at.f > gr.hi) {
+            pen = false;
+            continue;
+          }
+          const b0 = Math.max(0, Math.floor((at.f - gr.lo) / g.df)), b1 = Math.min(g.bins, Math.max(b0 + 1, Math.floor((at.f + at.fx - gr.lo) / g.df)));
           let v = -1e9;
           for (let b = b0; b < b1; b++) v = Math.max(v, gs[b]);
           const y = Math.max(T, Math.min(ph, yOf(v)));
-          if (x === 0) c.moveTo(L + x, y);
-          else c.lineTo(L + x, y);
+          if (pen) c.lineTo(L + x, y);
+          else c.moveTo(L + x, y);
+          pen = true;
         }
         c.stroke();
         c.globalAlpha = 1;
@@ -1075,9 +1111,16 @@ export class Display {
           c.lineTo(x + 0.5, ph);
           c.stroke();
           c.globalAlpha = 1;
-          const b = Math.max(0, Math.min(r.bins - 1, Math.round((f - r.f0) / r.df)));
-          const sm = this.smoothed[k] ?? r.avg;
-          const pk = this.hold[k] ?? r.max;
+          // the levels as drawn: the strongest bin under this pixel (several bins share one at wide spans)
+          const at = Display.fAt(ax, Math.round(x - L)), rlo = r.f0 - r.df / 2;
+          const b0 = Math.max(0, Math.min(r.bins - 1, Math.floor(((at?.f ?? f) - rlo) / r.df)));
+          const b1 = Math.min(r.bins, Math.max(b0 + 1, Math.floor(((at?.f ?? f) + (at?.fx ?? 0) - rlo) / r.df)));
+          const smA = this.smoothed[k] ?? r.avg, pkA = this.hold[k] ?? r.max;
+          let sm = -1e9, pk = -1e9;
+          for (let b = b0; b < b1; b++) {
+            sm = Math.max(sm, smA[b]);
+            pk = Math.max(pk, pkA[b]);
+          }
           // over the waterfall: frequency and age (the levels shown live are not that row's)
           const wy = this.hoverWfY * d;
           const older = this.hoverWfY >= 0 && this.sepRows >= 0 && wy > this.sepRows;
@@ -1091,7 +1134,7 @@ export class Display {
             ? 'older rows: another frequency/span (see the label at the line)'
             : this.hoverWfY >= 0
               ? `${this.opts.stitch ? `${SLOT[r.slot]} · ` : ''}${(f / 1e6).toFixed(3)} MHz · ${beforeStop ? 'before Stop' : `${(wy / this.rowsPerS).toFixed(1)} s ago`}${wifi ? ` · ${wifi}` : ''}${spur}`
-              : `${this.opts.stitch ? `${SLOT[r.slot]} · ` : ''}${(f / 1e6).toFixed(3)} MHz · avg ${sm[b].toFixed(1)} · peak ${pk[b].toFixed(1)} dBFS${spur}`;
+              : `${this.opts.stitch ? `${SLOT[r.slot]} · ` : ''}${(f / 1e6).toFixed(3)} MHz · avg ${sm.toFixed(1)} · peak ${pk.toFixed(1)} dBFS${spur}`;
           c.font = `${12 * d}px system-ui, sans-serif`;
           const tw = c.measureText(txt).width + 12 * d;
           const tx = Math.min(W - tw, x + 8 * d);

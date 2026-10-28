@@ -500,45 +500,66 @@ static void ht_points(const cf *x, size_t n, size_t sig0, Frame &f, const std::a
   P.evm_db = evm_db(e, r);
 }
 
-bool Decoder::decode20(const cf *in, size_t n, Frame &f, bool payload, bool points) {
+bool Decoder::decode20(const cf *in, size_t n, Frame &f, bool payload, bool points, const Frame *from) {
   const Tables &t = T();
   if (n < 720)
     return false;
   std::vector<cf> x(in, in + n);
-  // coarse frequency offset from the short training field (repeats every 16 samples)
-  std::complex<double> c = 0;
-  for (size_t k = 40; k < 136; k++)
-    c += std::complex<double>(x[k]) * std::conj(std::complex<double>(x[k + 16]));
-  double cfo = -std::arg(c) / (2 * kPi * 16); // cycles per sample
-  rotate(x.data(), n, -cfo);
-  // the long training field: two copies 64 apart
-  size_t l1 = 0;
-  float best = -1;
-  // (the snippet starts 2 us before the detector's plateau, which starts near the short training
-  // field: the first LTF copy belongs ~232 samples in; a few us either way)
-  for (size_t p = 150; p + 128 + 80 * 3 + 16 <= n && p < 330; p++) {
-    float a = 0, b = 0;
-    cf s1 = 0, s2 = 0;
-    for (int k = 0; k < 64; k++) {
-      s1 += x[p + k] * std::conj(t.ltf_t[k]);
-      s2 += x[p + 64 + k] * std::conj(t.ltf_t[k]);
+  double cfo;  // cycles per sample
+  size_t l1;   // the first LTF copy
+  if (from) {  // the same snippet, decoded before: its estimates stand
+    cfo = from->cfo_hz / 20e6;
+    l1 = static_cast<size_t>(from->ltf_at);
+    rotate(x.data(), n, -cfo);
+    if (l1 + 128 + 16 + 64 + 160 > n)
+      return false;
+  } else {
+    // coarse frequency offset from the short training field (repeats every 16 samples)
+    std::complex<double> c = 0;
+    for (size_t k = 40; k < 136; k++)
+      c += std::complex<double>(x[k]) * std::conj(std::complex<double>(x[k + 16]));
+    cfo = -std::arg(c) / (2 * kPi * 16);
+    rotate(x.data(), n, -cfo);
+    // the long training field: two copies 64 apart
+    l1 = 0;
+    float best = -1;
+    // (the snippet starts 2 us before the detector's plateau, which starts near the short training
+    // field: the first LTF copy belongs ~232 samples in; a few us either way)
+    for (size_t p = 150; p + 128 + 80 * 3 + 16 <= n && p < 330; p++) {
+      float a = 0, b = 0;
+      cf s1 = 0, s2 = 0;
+      for (int k = 0; k < 64; k++) {
+        s1 += x[p + k] * std::conj(t.ltf_t[k]);
+        s2 += x[p + 64 + k] * std::conj(t.ltf_t[k]);
+      }
+      a = std::abs(s1);
+      b = std::abs(s2);
+      if (a + b > best) {
+        best = a + b;
+        l1 = p;
+      }
     }
-    a = std::abs(s1);
-    b = std::abs(s2);
-    if (a + b > best) {
-      best = a + b;
-      l1 = p;
-    }
+    if (l1 + 128 + 16 + 64 + 160 > n)
+      return false;
+    // The match, normalised (1: the samples are the LTF; a carrier scores ~0.14, one subcarrier of
+    // 52): a tone that switches off, or any burst, is not a frame however its bits happen to pass
+    // the L-SIG checks. Indoor multipath spreads a real LTF over a few samples: well above 0.35.
+    double ex = 0, el = 0;
+    for (int k = 0; k < 128; k++)
+      ex += std::norm(std::complex<double>(x[l1 + static_cast<size_t>(k)]));
+    for (int k = 0; k < 64; k++)
+      el += std::norm(std::complex<double>(t.ltf_t[k]));
+    if (best < 0.35 * std::sqrt(2 * ex * el))
+      return false;
+    std::complex<double> d = 0;
+    for (int k = 0; k < 64; k++)
+      d += std::complex<double>(x[l1 + 64 + k]) * std::conj(std::complex<double>(x[l1 + k]));
+    const double fine = std::arg(d) / (2 * kPi * 64);
+    rotate(x.data(), n, -fine);
+    cfo += fine;
   }
-  if (l1 + 128 + 16 + 64 + 160 > n)
-    return false;
-  std::complex<double> d = 0;
-  for (int k = 0; k < 64; k++)
-    d += std::complex<double>(x[l1 + 64 + k]) * std::conj(std::complex<double>(x[l1 + k]));
-  const double fine = std::arg(d) / (2 * kPi * 64);
-  rotate(x.data(), n, -fine);
-  cfo += fine;
   f.cfo_hz = cfo * 20e6;
+  f.ltf_at = static_cast<int>(l1);
   std::array<cf, 64> f1, f2, h;
   // every FFT window starts kBackoff samples early, inside the guard interval: a window late by even a
   // sample takes in the next symbol where the channel spreads it; the phase ramp this adds is the same
@@ -560,7 +581,8 @@ bool Decoder::decode20(const cf *in, size_t n, Frame &f, bool payload, bool poin
     pn += std::norm(f1[k] - f2[k]) / 4;
     nk[k] = std::norm(f1[k] - f2[k]) / 2 / (std::norm(h[k]) + 1e-20f);
   }
-  f.snr_db = static_cast<float>(10 * std::log10(ps / (pn + 1e-20)));
+  // (ps holds the signal plus half the noise, pn half the noise: the ratio alone reads 3 dB high)
+  f.snr_db = static_cast<float>(10 * std::log10(std::max(ps - pn, 0.01 * pn) / (2 * pn + 1e-20)));
   // per-subcarrier noise, smoothed over 5 neighbours: a narrow interferer counts less in the decode
   std::array<float, 64> w{};
   for (int k = 0; k < 64; k++) {
@@ -626,7 +648,15 @@ bool Decoder::decode20(const cf *in, size_t n, Frame &f, bool payload, bool poin
     z1 = symbol(&x[sig0 + 80], h, kPol[1]);
     z2 = symbol(&x[sig0 + 160], h, kPol[2]);
     const bool q1 = q(z1), q2 = q(z2);
-    f.fmt = q1 ? 'H' : q2 ? 'V' : 'L';
+    // HE and EHT (802.11ax/be): L-SIG is followed by RL-SIG, the same symbol again, then BPSK SIG
+    // fields (neither QBPSK test fires: they would pass as legacy 6 Mb/s, and a legacy decode of them
+    // would fail its CRC)
+    double same = 0, pw = 0;
+    for (int s : t.data_sc) {
+      same += (z1[bin(s)] * std::conj(zs[bin(s)])).real();
+      pw += std::norm(zs[bin(s)]);
+    }
+    f.fmt = q1 ? 'H' : q2 ? 'V' : same > 0.7 * pw ? 'X' : 'L';
   }
   if (points) {
     Points &P = f.pts;
@@ -640,12 +670,15 @@ bool Decoder::decode20(const cf *in, size_t n, Frame &f, bool payload, bool poin
     }
     P.n_lsig = 48;
     P.evm_lsig_db = evm_db(e, r);
-    if (f.fmt != 'L') { // HT-SIG (QBPSK, QBPSK) or VHT-SIG-A (BPSK, QBPSK)
+    if (f.fmt != 'L') { // HT-SIG (QBPSK, QBPSK), VHT-SIG-A (BPSK, QBPSK) or RL-SIG + HE-SIG-A / U-SIG (BPSK, BPSK)
       for (const auto *z : {&z1, &z2})
         for (int s : t.data_sc)
           P.z.push_back(pt16((*z)[bin(s)]));
       P.n_sig2 = 96;
-      ht_points(x.data(), n, sig0, f, z1, z2, sw);
+      if (f.fmt == 'X')
+        P.skip = 6; // (the HE/EHT signal fields, training fields and payload are not read)
+      else
+        ht_points(x.data(), n, sig0, f, z1, z2, sw);
     } else { // a legacy payload: its first symbols that the snippet holds
       const int bits = bits_of(rate);
       const int nsym = std::min(kPointSymbols, static_cast<int>(std::ceil((16 + 8.0 * len + 6) / (4.0 * rate))));
@@ -731,7 +764,9 @@ void Decoder::reset(double fs, double centre_hz) {
   _lvl_scans = 0;
   _cands.clear();
   for (double c : channels())
-    if (_dec && std::abs(c - centre_hz) <= (_dec == 2 ? 11.5e6 : 1.5e6))
+    // (at 20 MS/s a channel up to 2 MHz off centre still fits: its outer subcarriers at 10.8 MHz, where
+    // the adapter's filter rolls off; so a span tuned by MHz at 2.4 GHz always has one)
+    if (_dec && std::abs(c - centre_hz) <= (_dec == 2 ? 11.5e6 : 2.0e6))
       _cands.push_back(c);
   _lp.clear();
   if (_dec == 2) { // 41 taps, cut at 9.6 MHz of 40 MS/s, Hamming
@@ -853,12 +888,14 @@ void Decoder::scan(std::vector<Frame> &out) {
         _din = true;
         _dstart = _dseg = i;
         _ndet++;
-        _bempty = _bpart = 0;
+        _bpart = 0; // (_bempty stays: a microwave oven switches with the mains, every on-phase a new detection)
       } else if (_din && i - _dseg >= 800 * us && m2 >= 0.12 * 0.12 && i - _dloud <= 2 * us) {
         // still on after 800 us (a tone or spur is coherent too and can hold it on): this part is
         // probed now (its first ms, so the parts overlap), the next part starts here
-        // (after two parts in vain, only every 4th: a microwave oven can hold it on for minutes)
-        if (_bempty < 2 || (++_bpart & 3) == 0)
+        // (the first part always: it holds a long frame's preamble; after two parts in vain, only
+        // every 4th: a microwave oven can hold it on for minutes)
+        const int part = _bpart++;
+        if (part == 0 || _bempty < 2 || (part & 3) == 0)
           _bjobs.push_back({_dseg > _abs0 + 10 * us ? _dseg - 10 * us : _abs0, i + 120 * us, i, _ndet});
         _dseg = i;
       } else if (_din && (m2 < 0.12 * 0.12 || i - _dloud > 2 * us)) {
@@ -982,7 +1019,7 @@ void Decoder::frame_at(uint64_t pos_abs, std::vector<Frame> &out) {
   }
   // its first payload symbols for the constellation, when the header's snippet did not hold them
   // (HT / VHT: up to the end of its airtime; the frame starts 192 before the LTF, at most at 330)
-  if (_points && f.fmt != 'B') {
+  if (_points && f.fmt != 'B' && f.fmt != 'X') {
     const uint64_t nsym = static_cast<uint64_t>(
         std::min<double>(kPointSymbols, std::ceil((16 + 8.0 * f.length + 6) / (4.0 * f.rate_mbps))));
     const uint64_t n20 = f.fmt == 'L' ? 330 + 144 + 80 * (nsym + 1) + 16
@@ -1027,8 +1064,7 @@ void Decoder::finish(std::vector<Frame> &out) {
       j.start = _bdone;
       continue;
     }
-    if (j.det == _ndet) // parts of this detection probed in vain: later ones less often
-      _bempty = j.hit ? 0 : _bempty + (fresh ? 1 : 0);
+    _bempty = j.hit ? 0 : _bempty + (fresh ? 1 : 0); // parts probed in vain: later ones less often
     _bjobs.erase(_bjobs.begin());
   }
   for (size_t i = 0; i < _pend.size();) {
@@ -1039,7 +1075,7 @@ void Decoder::finish(std::vector<Frame> &out) {
     }
     const auto z20 = snippet(p.pos, p.end - p.pos, p.off);
     Frame g;
-    const bool ok = decode20(z20.data(), z20.size(), g, p.whole, _points);
+    const bool ok = decode20(z20.data(), z20.size(), g, p.whole, _points, &p.f); // (the header once: its LTF and CFO stand)
     if (ok && _points)
       p.f.pts = std::move(g.pts); // (the header's own, from fewer symbols, otherwise)
     if (ok && g.mac) {

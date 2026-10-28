@@ -17,6 +17,9 @@
 #include "dsp.h"
 #include "protocol.h"
 #include "receiver.h"
+#include "recorder.h"
+#include <filesystem>
+#include <unistd.h>
 #include "signals.h"
 #include "wifi.h"
 
@@ -210,6 +213,79 @@ static void test_reduce_and_frame() {
       CHECK(std::abs(d.avg[i] - rows[0].avg[i]) <= kDbStep / 2 + 1e-3f);
   }
   CHECK(!decode_row(frame.data(), frame.size() - 1, d));
+}
+
+// The wire format, byte for byte: the same frame is checked by the UI's decoder (web/tests/protocol.test.ts),
+// so the two sides cannot drift apart unnoticed. Path B of view B, gapped and offset, run 7, seq 258.
+static const char *kGoldenRow =
+    "57535257" "0100" "d1" "07" "02010000" "04000000" "000000000000f83f" "00000070084cf341" "000000000040af40"
+    "000016c3" "9a99193f" "00" "53" "d9" "ff" "01" "54" "d9" "ff";
+static void test_row_golden() {
+  Row r;
+  r.path = 1;
+  r.slot = 1;
+  r.gapped = r.offset = true;
+  r.gen = 7;
+  r.seq = 258;
+  r.f0 = 5180e6;
+  r.df = 4000;
+  r.avg = {-150.f, -100.f, -20.f, 3.f};
+  r.max = {-149.4f, -99.7f, -19.9f, 10.f};
+  const auto fr = encode_row(r, 1.5);
+  std::string hex;
+  for (uint8_t b : fr) {
+    char h[3];
+    std::snprintf(h, sizeof h, "%02x", b);
+    hex += h;
+  }
+  CHECK(hex == kGoldenRow);
+  if (hex != kGoldenRow)
+    std::printf("  got %s\n", hex.c_str());
+  DecodedRow d;
+  CHECK(decode_row(fr.data(), fr.size(), d) && d.slot == 1 && d.path == 1 && d.gapped && d.offset && d.gen == 7 && d.seq == 258);
+  CHECK(d.bins == 4 && d.t == 1.5 && d.f0 == 5180e6 && d.df == 4000);
+  CHECK(std::abs(d.avg[1] + 100.f) <= kDbStep / 2 + 1e-3f && d.max[3] == kDbMin + 255 * kDbStep); // (clamped at the top)
+  const auto fa = encode_row(r, 1.5, 0); // the engine's slot wins over the row's
+  CHECK(decode_row(fa.data(), fa.size(), d) && d.slot == 0);
+}
+
+// The SigMF recorder, without hardware: a file of N samples, its metadata, and a second file in the
+// same second gets its own name.
+static void test_recorder() {
+  char tmpl[] = "/tmp/wsdr-test-XXXXXX";
+  const char *dir = mkdtemp(tmpl);
+  CHECK(dir != nullptr);
+  if (!dir)
+    return;
+  std::string data, meta;
+  {
+    Recorder rec(dir);
+    data = rec.start(40e6, 5180e6, "RTL8812BU (test)", 0, 30, true);
+    CHECK(data.size() > 11 && data.substr(data.size() - 11) == ".sigmf-data");
+    meta = data.substr(0, data.size() - 11) + ".sigmf-meta";
+    std::vector<int16_t> iq(2 * 8192);
+    for (size_t i = 0; i < iq.size(); i++)
+      iq[i] = static_cast<int16_t>((i * 37) % 4096 - 2048) * 16;
+    for (int k = 0; k < 20; k++)
+      rec.push(iq.data(), 8192);
+    CHECK(rec.stop());
+    CHECK(!rec.failed() && rec.dropped() == 0);
+    const RecordInfo ri = rec.info();
+    CHECK(!ri.active && ri.samples == 20 * 8192 && ri.error.empty());
+    // a second recording started in the same second: another name, never the same file
+    const std::string again = rec.start(40e6, 5180e6, "RTL8812BU (test)", 0, 30, true);
+    CHECK(again != data && std::filesystem::exists(again));
+    rec.stop();
+  }
+  std::error_code ec;
+  CHECK(std::filesystem::file_size(data, ec) == 4 * 20 * 8192);
+  std::ifstream in(meta);
+  nlohmann::json m;
+  CHECK((in >> m, !in.fail()));
+  CHECK(m["global"]["core:datatype"] == "ci16_le" && m["global"]["core:sample_rate"] == 40e6);
+  CHECK(m["global"]["wsdr:samples"] == 20 * 8192 && !m["global"].contains("wsdr:error") && !m["global"].contains("wsdr:note"));
+  CHECK(m["captures"][0]["core:frequency"] == 5180e6);
+  std::filesystem::remove_all(dir, ec);
 }
 
 static int bench() {
@@ -1299,6 +1375,8 @@ int main(int argc, char **argv) {
   test_offgrid();
   test_level_vs_fft();
   test_reduce_and_frame();
+  test_row_golden();
+  test_recorder();
   test_gapped();
   test_crop();
   test_wifi_frames();

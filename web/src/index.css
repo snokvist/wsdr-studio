@@ -138,7 +138,7 @@ button.toggle.on .switch i { transform: translateX(14px); background: #0b0e13; }
 .plots.pano { grid-column: 1 / -1; border-top: 1px solid var(--line); }
 .pano-legend { position: absolute; top: 4px; right: 12px; z-index: 4; }
 .pano-legend button { min-height: 22px; background: rgba(11, 14, 19, 0.85); }
-.offaxis { position: absolute; top: 4px; right: 12px; z-index: 4; padding: 2px 8px; font-size: 12px; color: var(--muted2); background: rgba(11, 14, 19, 0.85); border-radius: 4px; }
+.offaxis { position: absolute; top: 32px; right: 12px; z-index: 4; padding: 2px 8px; font-size: 12px; color: var(--muted2); background: rgba(11, 14, 19, 0.85); border-radius: 4px; } /* (under the legend) */
 .views.compare .view + .view { border-top: 1px solid var(--line); }
 .views.panorama .view + .view { border-left: 1px solid var(--line); }
 
@@ -150,9 +150,9 @@ button.toggle.on .switch i { transform: translateX(14px); background: #0b0e13; }
 }
 .vhead > * { flex-shrink: 0; }
 .vhead .spacer { flex-shrink: 1; min-width: 0; }
-.vhead .amber, .vhead .chlabel { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vhead .amber, .vhead .badge, .vhead .chlabel { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @container view (max-width: 540px) { .vhead .chlabel, .vhead .long { display: none; } }
-@container view (max-width: 700px) { .vhead .ltext, .vhead .stext, .vhead:has(.amber) .chlabel { display: none; } }
+@container view (max-width: 700px) { .vhead .ltext, .vhead .stext, .vhead:has(.amber, .badge) .chlabel, .vhead:has(.amber, .badge) .long { display: none; } }
 .view.sel .vhead { background: #13202c; }
 .view.sel.s0 .vhead { border-top-color: var(--view-a); }
 .view.sel.s1 .vhead { border-top-color: var(--view-b); }
@@ -182,6 +182,8 @@ button.rec.on { background: #5a1f22; border-color: var(--bad); color: #ffd6d6; f
 .strip button.x { margin-left: auto; background: transparent; border-color: transparent; font-size: 16px; line-height: 1; }
 
 .plots { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; overflow: hidden; }
+/* (a size container, so the inspector can fit its height; not in Panorama, where .plots holds only the notes) */
+.mode-single .view .plots, .mode-compare .view .plots { container-type: size; }
 /* info notes float over the plot (bottom right) so the layout never jumps */
 .toasts { position: absolute; bottom: 12px; right: 12px; z-index: 5; display: flex; flex-direction: column; gap: 6px; align-items: flex-end; pointer-events: none; }
 .toast {
@@ -324,7 +326,8 @@ button.rcell > span { max-width: 100%; }
 .inspector .legend button.off { text-decoration: line-through; } /* (.legend button.off dims it) */
 .inspector button.x { background: transparent; border-color: transparent; font-size: 16px; line-height: 1; }
 .mode-panorama .view .inspector { display: none; }
-.inspector canvas.iq { width: 100%; aspect-ratio: 1; border: 1px solid var(--line); border-radius: 4px; }
+/* the constellation fits the plot area's height (Compare at 720 px: ~250 px), the readout below it */
+.inspector canvas.iq { width: 100%; max-width: calc(100cqh - 130px); aspect-ratio: 1; align-self: center; border: 1px solid var(--line); border-radius: 4px; }
 .inspector .legend { display: flex; flex-wrap: wrap; gap: 4px; }
 .inspector .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
 .inspector dl.kv { margin: 0; font-size: 12px; }

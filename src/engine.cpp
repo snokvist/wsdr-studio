@@ -72,6 +72,8 @@ const char *paths_name(int p) { return p == 2 ? "b" : p == 3 ? "ab" : "a"; }
 Engine::Engine(Callbacks cb, std::string record_dir, int slot, std::shared_ptr<Claims> claims)
     : _cb(std::move(cb)), _slot(slot), _claims(claims ? std::move(claims) : std::make_shared<Claims>()),
       _rec(std::move(record_dir)) {
+  static std::once_flag warm; // measured FFT plans for all sizes, once per process, off the DSP thread
+  std::call_once(warm, [] { std::thread(Spectrum::warm_plans).detach(); });
   _cmd = std::thread([this] { cmd_loop(); });
   _dsp = std::thread([this] { dsp_loop(); });
   _wifi = std::thread([this] { wifi_loop(); });
@@ -81,7 +83,15 @@ Engine::Engine(Callbacks cb, std::string record_dir, int slot, std::shared_ptr<C
     std::unique_lock<std::mutex> l(_qm);
     while (!_quit) {
       l.unlock();
-      _disk_free = disk_free();
+      const double free = disk_free();
+      _disk_free = free;
+      // A recording ends before the disk is full: below 1 GiB, or 10 s of data, the file is finalised
+      // the normal way (complete metadata, the view says why), and the rest of the system keeps room.
+      if (_recording && free >= 0) {
+        const RecordInfo ri = _rec.info();
+        if (free < std::max(double(1) * 1024 * 1024 * 1024, 10 * ri.fs * 4) && !_rec_stop_requested.exchange(true))
+          submit({{"cmd", "_rec_stop"}, {"reason", "the disk is nearly full"}, {"rec", _rec_id.load()}}, nullptr);
+      }
       l.lock();
       _diskcv.wait_for(l, std::chrono::seconds(2), [&] { return _quit; });
     }
@@ -127,9 +137,19 @@ void Engine::poll() {
     return;
   // Fatal only when the worker has ended (a retune error is retried and passes).
   const wsdr::RxStatus st = r->status();
+  if (st.restarts > _seen_restarts) { // (the only record of why: the stream restarts by itself)
+    std::fprintf(stderr, "wsdr-studiod: view %c: stream fault %llu, restarted: %s\n", 'A' + _slot, static_cast<unsigned long long>(st.restarts), st.last_fault.c_str());
+    _seen_restarts = st.restarts;
+  }
   if (!st.running && (st.state == wsdr::RxState::Lost || st.state == wsdr::RxState::Error) &&
       !_lost_requested.exchange(true))
     submit({{"cmd", "_lost"}}, nullptr);
+}
+
+void Engine::note_failure(const std::string &msg) {
+  std::lock_guard<std::mutex> l(_sm);
+  if (_state == "closed")
+    _error = msg;
 }
 
 void Engine::cmd_loop() {
@@ -491,6 +511,7 @@ void Engine::open_adapter(uint16_t pid, const json &c) {
   {
     std::lock_guard<std::mutex> l(_rxm);
     _rx = std::move(r);
+    _seen_restarts = 0; // (the count is per receiver)
   }
   _cb.event(caps());
   _cb.event(settings());
@@ -546,7 +567,12 @@ void Engine::set_view(const wsdr::RxSettings &view, const wsdr::RxSettings &hw) 
     std::lock_guard<std::mutex> l(_sm);
     _view = offset ? view : hw; // not offset: the radio's own (clamped) settings are the view
   }
-  const int w = wsdr::Receiver::width_of(hw, _caps.cu);
+  bool cu;
+  {
+    std::lock_guard<std::mutex> l(_sm);
+    cu = _cu; // (_caps is set once the receiver is open: after this, at a Start)
+  }
+  const int w = wsdr::Receiver::width_of(hw, cu);
   Crop c;
   c.hw_centre = wsdr::Receiver::centre_of(wsdr::Receiver::channel_for(hw.freq, w), w);
   c.hw_fs = wsdr::Receiver::rate_of(hw.rate_sel);
@@ -594,7 +620,6 @@ json Engine::caps() const {
     j["rates"] = rates;
     j["gain_max"] = _caps.gain_max;
     j["gain_step"] = _caps.gain_step;
-    j["wide_capable"] = std::min(_caps.min_rate_sel, _caps.gapped_min_rate_sel) <= 1; // 40 MHz width at 40 MS/s
   }
   return j;
 }
@@ -609,18 +634,20 @@ json Engine::status() const {
   }
   if (const auto r = rx(); r && r->is_open()) {
     const wsdr::RxStatus st = r->status();
-    j["rx"] = {{"state", wsdr::rx_state_name(st.state)}, {"banks", st.banks}, {"restarts", st.restarts},
+    j["rx"] = {{"state", wsdr::rx_state_name(st.state)}, {"banks", st.banks}, {"restarts", st.restarts}, {"settling", st.settling},
                {"channel", st.channel}, {"width", st.width}, {"centre", st.centre_hz}, {"fs", st.fs},
                {"gapped", st.gapped}, {"error", st.error}};
     wsdr::RxSettings v;
+    bool cu;
     {
       std::lock_guard<std::mutex> l(_sm);
       v = _view;
+      cu = _cu;
     }
     const wsdr::RxSettings hw = hw_for(v);
     if (hw.freq != v.freq || hw.rate_sel != v.rate_sel) { // offset-tuned: report the view, and the radio
       j["rx"]["offset"] = true;
-      const int w = wsdr::Receiver::width_of(hw, _caps.cu); // the radio's settings (not the run still ending)
+      const int w = wsdr::Receiver::width_of(hw, cu); // the radio's settings (not the run still ending)
       j["rx"]["hw_centre"] = wsdr::Receiver::centre_of(wsdr::Receiver::channel_for(hw.freq, w), w);
       j["rx"]["hw_fs"] = wsdr::Receiver::rate_of(hw.rate_sel);
       j["rx"]["centre"] = v.freq;
@@ -691,7 +718,7 @@ json Engine::points(uint64_t id) {
           {"cfo_ppm", std::round(f.cfo_hz / f.centre_hz * 1e8) / 100}, {"evm_lsig_db", r1(P.evm_lsig_db)},
           {"evm_db", P.bits ? json(r1(P.evm_db)) : json(nullptr)}, {"bits", P.bits}, {"n_lsig", P.n_lsig},
           {"n_sig2", P.n_sig2}, {"scale", wifi::kPointScale}, {"z", z}};
-  if (f.fmt == 'H' || f.fmt == 'V') {
+  if (f.fmt == 'H' || f.fmt == 'V' || f.fmt == 'X') {
     j["skip"] = P.skip;
     if (P.width) { // (the SIG was read; a multi-user frame has no MCS: -1)
       j.update({{"nss", P.nss}, {"width", P.width}, {"sgi", P.sgi}, {"ldpc", P.ldpc}, {"stbc", P.stbc}});
@@ -851,7 +878,7 @@ void Engine::dsp_loop() {
       cfg = b->meta.cfg;
       sp.process(b->data.data(), b->bytes, b->meta, [&](const Row &r) {
         _rows++;
-        _cb.row(encode_row(r, now_s()));
+        _cb.row(encode_row(r, now_s(), _slot));
       });
       // Wi-Fi frames: a copy of path A, stamped on the rows' clock (a row is stamped when its last
       // samples are processed, here, so a frame lands in the row that holds it)

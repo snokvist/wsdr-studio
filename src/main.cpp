@@ -355,11 +355,7 @@ int main(int argc, char **argv) {
   const auto claims = std::make_shared<Claims>();
   for (int i = 0; i < kSlots; i++) {
     engs[i] = std::make_unique<Engine>(
-        Engine::Callbacks{[&, i](std::vector<uint8_t> &&f) {
-                            if (i && f.size() > 6)
-                              f[6] |= 0x10; // slot B
-                            srv->broadcast_binary(std::move(f));
-                          },
+        Engine::Callbacks{[&](std::vector<uint8_t> &&f) { srv->broadcast_binary(std::move(f)); },
                           [&, i](const json &e) {
                             // the adapter list is everyone's; the rest is this slot's
                             srv->broadcast_text(e.value("type", "") == "devices" ? e.dump() : tagged(e, i));
@@ -373,8 +369,14 @@ int main(int argc, char **argv) {
     std::fprintf(stderr, "wsdr-studiod: cannot write %s (a second launch will not find this one)\n",
                  instance_file().c_str());
   std::fprintf(stderr, "wsdr-studiod: serving http://127.0.0.1:%u/ from %s\n", srv->port(), so.webroot.c_str());
-  if (a.pid)
-    eng->submit(open_cmd(a), nullptr);
+  if (a.pid) // (no client is there yet for the reply: a failure goes to stderr and the view's status)
+    eng->submit(open_cmd(a), [eng](const json &r) {
+      if (r.value("type", "") != "error")
+        return;
+      const std::string msg = "--pid/--freq/--rate: " + r.value("msg", "");
+      std::fprintf(stderr, "wsdr-studiod: %s\n", msg.c_str());
+      eng->note_failure(msg);
+    });
 
   net::signal_set sig(io, SIGINT, SIGTERM, SIGHUP); // SIGHUP: the terminal closed; finalise cleanly
   sig.async_wait([&](const boost::system::error_code &, int) { io.stop(); });

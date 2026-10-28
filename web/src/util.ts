@@ -6,11 +6,14 @@ import type { Device, Rate } from './protocol';
 
 export const FFTS = [1024, 2048, 4096, 8192, 16384];
 export const RATES: Rate[] = [5, 4, 3, 2, 1, 0].map((r) => ({ rate_sel: r, fs: 80e6 / (1 << r) }));
+// What an adapter carries continuously before Start (MS/s). An 8812BU plugged in at USB 2 counts as
+// USB 3: Start switches it (and should that fail, the backend opens the widest continuous span).
+export const contMsps = (d: Device) => (d.pid === 0xb812 && d.speed_mbps < 5000 ? 40 : d.max_msps);
 // What an adapter offers before Start (after Start the backend's caps say it).
 export const ratesFor = (d: Device | undefined, offsetTuning: boolean): Rate[] =>
   d
-    ? RATES.filter((r) => r.fs <= d.max_msps * 1e6 || r.fs <= (d.gapped_msps ?? 0) * 1e6).map((r) => {
-        const gapped = r.fs > d.max_msps * 1e6;
+    ? RATES.filter((r) => r.fs <= contMsps(d) * 1e6 || r.fs <= (d.gapped_msps ?? 0) * 1e6).map((r) => {
+        const gapped = r.fs > contMsps(d) * 1e6;
         // as the backend: with offset tuning the 8812CU's 10/20 MHz gapped views come from a 40 MHz capture
         return { ...r, gapped, hw_fs: gapped && offsetTuning && d.chip.includes('8822C') && r.fs <= 20e6 ? 40e6 : r.fs };
       })
@@ -40,7 +43,12 @@ export const snap = (f: number) => {
   return Math.min(6165e6, Math.max(5080e6, Math.round(f / 5e6) * 5e6));
 };
 export const bandOf = (f: number): '2.4' | '5' => (f < 3.7e9 ? '2.4' : '5');
-export const UDEV_CMD = 'sudo cp tools/99-wsdr.rules /etc/udev/rules.d/ && sudo udevadm control --reload';
+// The udev rule (the same as the README's): self-contained, so it works from the AppImage. Its number
+// sorts before 73-seat-late.rules, where uaccess is applied (a later rule never gets it).
+export const UDEV_RULES = [0xb812, 0xc812]
+  .map((pid) => `SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="${pid.toString(16)}", TAG+="uaccess", MODE="0660", GROUP="plugdev"`)
+  .join('\n');
+export const UDEV_CMD = `printf '%s\\n' '${UDEV_RULES.split('\n').join("' '")}' | sudo tee /etc/udev/rules.d/70-wsdr.rules > /dev/null && sudo udevadm control --reload`;
 export const LOCKED = 'End the recording to change tuning or gain';
 export const VIEW_COLOUR = ['#4fc3f7', '#c792ea'];
 export const ANT_COLOUR: [string, string] = ['#ffab70', '#8fd694']; // Ant 1, Ant 2
@@ -63,6 +71,10 @@ export type Prefs = {
   mapRange: Range; mapDwell: number; mapGapped: boolean; // Spectral Map: what it sweeps, ms per step, gapped steps allowed
   wifiMarks: boolean;                             // mark the Wi-Fi frames decoded from the samples
 };
+// Preferences live in a file of the app's (the shell's bridge) so they do not depend on the page's
+// origin, which includes the backend's port; the browser's storage is the fallback (and the old place).
+type PrefsBridge = { prefs?: { load(): string | null; save(s: string): void } };
+const bridge = () => (window as unknown as { wsdr?: PrefsBridge }).wsdr?.prefs;
 export function loadPrefs(): Prefs {
   const d: Prefs = {
     smooth: 0.7, wfMode: 'max', scale: null, retuned: false, fft: 8192, tuning: null, tuningB: null,
@@ -70,12 +82,13 @@ export function loadPrefs(): Prefs {
     sidebar: true, showAvg: true, showPeak: true, mapRange: 'u12', mapDwell: 250, mapGapped: false, wifiMarks: false,
   };
   try {
-    const p = JSON.parse(localStorage.getItem(PREFS_KEY) ?? '{}');
+    const p = JSON.parse(bridge()?.load() ?? localStorage.getItem(PREFS_KEY) ?? '{}');
     // before v3: dual (on/off) and layout (row: side by side, column: stacked)
     if (p.mode === undefined && p.dual !== undefined) p.mode = p.dual ? (p.layout === 'column' ? 'compare' : 'panorama') : 'single';
     delete p.dual;
     delete p.layout;
     delete p.collapsed; // before: folding sidebar sections
+    delete p.mapGapped; // a gapped span is picked in a session, never remembered (the views' spans too)
     return { ...d, ...p };
   } catch {
     return d;
@@ -83,7 +96,10 @@ export function loadPrefs(): Prefs {
 }
 export function savePrefs(p: Prefs) {
   try {
-    localStorage.setItem(PREFS_KEY, JSON.stringify(p));
+    const s = JSON.stringify(p);
+    const b = bridge();
+    if (b) b.save(s);
+    else localStorage.setItem(PREFS_KEY, s);
   } catch {
     /* private window */
   }

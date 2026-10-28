@@ -6,7 +6,8 @@
 // rows of B carry its slot and its centre, a retune of B moves only B, closing B leaves A running.
 import { readFileSync } from 'node:fs';
 
-const [, port, token] = readFileSync(`${process.env.XDG_RUNTIME_DIR}/wsdr-studio/instance`, 'utf8').trim().split(' ');
+import os from 'node:os';
+const [, port, token] = readFileSync(`${process.env.XDG_RUNTIME_DIR || `${os.homedir()}/.cache`}/wsdr-studio/instance`, 'utf8').trim().split(' ');
 let fails = 0;
 const check = (ok, what) => { console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}`); if (!ok) fails++; };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -36,7 +37,7 @@ ws.onmessage = (m) => {
   if (e.type === 'caps' && e.slot !== undefined) caps[e.slot] = e;
   if (e.type === 'settings' && e.slot !== undefined) settings[e.slot] = { ...settings[e.slot], ...e };
 };
-await new Promise((r) => (ws.onopen = r));
+await Promise.race([new Promise((r) => (ws.onopen = r)), new Promise((_, rej) => setTimeout(() => rej(new Error('WebSocket open: no answer in 5 s')), 5000))]);
 const req = (cmd, args = {}) => new Promise((r) => { const id = nextId++; pending.set(id, r); ws.send(JSON.stringify({ cmd, id, ...args })); });
 const recent = (slot, ms) => rows[slot].filter((r) => Date.now() - r.at < ms);
 const centredAt = (slot, f) => { const r = recent(slot, 500); return r.length > 0 && r.every((x) => Math.abs(x.centre - f) < 2.5e6); };
