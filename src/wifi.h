@@ -31,7 +31,7 @@ struct Points {
   bool sgi = false, ldpc = false, stbc = false;
   // why an HT / VHT frame has no payload points: 0 shown, 1 its SIG failed its CRC, 2 wider than
   // 20 MHz, 3 not a single plain stream (more streams, STBC, an MCS this does not read), 4 its payload
-  // had not arrived, 5 it has none (a sounding frame, NDP)
+  // had not arrived, 5 it has none (a sounding frame, NDP), 6 an HE/EHT frame (its SIG fields are not read)
   int skip = 0;
 };
 
@@ -39,12 +39,13 @@ struct Frame {
   double t = 0;          // start (s), on the clock of the samples fed in
   double centre_hz = 0;  // the 20 MHz channel it was decoded on (40 MHz: the pair's centre)
   int bw_mhz = 20;       // 20, or 40 when its preamble is duplicated on the paired channel (5 GHz)
-  char fmt = 'L';        // 'L' legacy OFDM, 'H' HT (802.11n), 'V' VHT (802.11ac), 'B' 802.11b DSSS/CCK
+  char fmt = 'L';        // 'L' legacy OFDM, 'H' HT (802.11n), 'V' VHT (802.11ac), 'X' HE/EHT (802.11ax/be), 'B' 802.11b DSSS/CCK
   int rate_mbps = 0;     // L-SIG rate (HT/VHT frames carry 6 here); 802.11b: 1, 2, 5 (5.5) or 11
   int length = 0;        // L-SIG length (bytes)
   double dur_us = 0;     // airtime from L-SIG (covers the whole PPDU, also HT/VHT)
-  float snr_db = 0;      // from the two LTF copies
+  float snr_db = 0;      // from the two LTF copies (OFDM: per subcarrier; 802.11b: the despread symbol's, a larger figure)
   double cfo_hz = 0;     // the sender's carrier against this receiver's tuning (both crystals' errors)
+  int ltf_at = 0;        // OFDM: where its first LTF copy sits in the 20 MS/s snippet (a second decode of the same snippet starts there)
   Points pts;            // with Decoder::keep_points
   // 6 Mb/s legacy frames (beacons, ACKs, RTS/CTS, ...) are decoded whole; with a good CRC their MAC
   // header is read (only addresses and, for beacons and probe responses, the network's name and
@@ -77,7 +78,9 @@ public:
   // set to the frame's start relative to where it was expected (seconds).
   // payload: also decode a 6 Mb/s legacy frame whole when the snippet holds all of it.
   // points: fill f.pts with what the snippet holds.
-  static bool decode20(const cf *x, size_t n, Frame &f, bool payload = false, bool points = false);
+  // from: a frame already decoded from the start of this same snippet: its LTF position and CFO are
+  // reused (no second estimate and search).
+  static bool decode20(const cf *x, size_t n, Frame &f, bool payload = false, bool points = false, const Frame *from = nullptr);
 
 private:
   void scan(std::vector<Frame> &out);
