@@ -95,6 +95,10 @@ public:
 
   void accept(http::request<http::string_body> req) {
     _ws.set_option(websocket::stream_base::timeout::suggested(beast::role_type::server));
+    // a small socket buffer: a page that stops reading (its thread busy) fills it in a fraction of a
+    // second, and the queue above then skips rows instead of the loopback buffering seconds of them
+    beast::error_code ignored;
+    beast::get_lowest_layer(_ws).socket().set_option(net::socket_base::send_buffer_size(256 * 1024), ignored);
     _ws.read_message_max(64 * 1024);
     _ws.async_accept(req, [self = shared_from_this()](beast::error_code ec) {
       if (ec)
@@ -117,8 +121,15 @@ public:
       return;
     }
     if (bin && _queued_bin >= kMaxQueuedBinary) {
+      // a slow page: the oldest row still waiting goes, so what it gets next is the newest picture
+      // (the front may be in flight: the one after it)
       _srv.count_drop();
-      return;
+      for (auto it = _q.begin() + 1; it != _q.end(); ++it)
+        if (it->bin) {
+          _q.erase(it);
+          _queued_bin--;
+          break;
+        }
     }
     _q.push_back({std::move(text), std::move(bin)});
     if (_q.back().bin)

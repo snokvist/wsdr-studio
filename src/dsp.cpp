@@ -33,7 +33,11 @@ struct Spectrum::Path {
     std::lock_guard<std::mutex> l(fftw_plan_mutex());
     in = fftwf_alloc_complex(n);
     out = fftwf_alloc_complex(n);
-    plan = fftwf_plan_dft_1d(n, in, out, FFTW_FORWARD, FFTW_ESTIMATE);
+    // a measured plan (about half the time of an estimated one) when its wisdom is there (see
+    // warm_plans; on the DSP thread a measurement itself would stall the stream), else an estimate
+    plan = fftwf_plan_dft_1d(n, in, out, FFTW_FORWARD, FFTW_MEASURE | FFTW_WISDOM_ONLY);
+    if (!plan)
+      plan = fftwf_plan_dft_1d(n, in, out, FFTW_FORWARD, FFTW_ESTIMATE);
     const int bins = std::min(n, kMaxBins);
     sum.assign(bins, 0.f);
     max.assign(bins, 0.f);
@@ -50,6 +54,17 @@ struct Spectrum::Path {
 Spectrum::Spectrum() { rebuild(); }
 Spectrum::~Spectrum() = default;
 
+void Spectrum::warm_plans() {
+  for (int n = 1024; n <= 16384; n <<= 1) { // (the sizes configure() allows)
+    std::lock_guard<std::mutex> l(fftw_plan_mutex());
+    fftwf_complex *in = fftwf_alloc_complex(n), *out = fftwf_alloc_complex(n);
+    if (fftwf_plan p = fftwf_plan_dft_1d(n, in, out, FFTW_FORWARD, FFTW_MEASURE))
+      fftwf_destroy_plan(p); // (its wisdom stays with the process)
+    fftwf_free(in);
+    fftwf_free(out);
+  }
+}
+
 void Spectrum::configure(const DspConfig &c) {
   DspConfig n = c;
   int f = 1024;
@@ -59,11 +74,13 @@ void Spectrum::configure(const DspConfig &c) {
   n.rows_per_s = std::clamp(n.rows_per_s, 1.0, 30.0);
   if (!(n.paths & 3))
     n.paths = 1;
+  const bool same = n.fft == _req_fft && n.paths == _c.paths && !_paths.empty();
   _c = n;
   _req_fft = n.fft;
   if (_gapped)
     _c.fft = std::min(_c.fft, kGappedMaxFft);
-  rebuild();
+  if (!same) // (a change of the row rate, DC block or the Wi-Fi finder keeps the plans and the rows)
+    rebuild();
 }
 
 void Spectrum::rebuild() {
@@ -154,9 +171,11 @@ void Spectrum::process(const uint8_t *bank, size_t bytes, const wsdr::BankMeta &
       const int dec = n / bins;
       float *one = p.one.data(), *sum = p.sum.data(), *mx = p.max.data();
       std::fill(p.one.begin(), p.one.end(), 0.f);
+      // (n and dec are powers of two: a mask and a shift, not a modulo and a divide per sample)
+      const int mask = n - 1, half = n / 2, sh = __builtin_ctz(static_cast<unsigned>(dec));
       for (int k = 0; k < n; k++) {
         const float re = p.out[k][0], im = p.out[k][1];
-        one[((k + n / 2) % n) / dec] += re * re + im * im;
+        one[((k + half) & mask) >> sh] += re * re + im * im;
       }
       for (int b = 0; b < bins; b++) {
         sum[b] += one[b];
@@ -197,7 +216,7 @@ void Spectrum::process(const uint8_t *bank, size_t bytes, const wsdr::BankMeta &
       std::fill(p.sum.begin(), p.sum.end(), 0.f);
       std::fill(p.max.begin(), p.max.end(), 0.f);
       p.count = 0;
-      p.row_samples = 0;
+      p.row_samples = _gapped ? 0 : p.row_samples - row_len; // (the remainder counts: rows then average rows_per_s)
       if (_gapped)
         p.row_t0 = clock();
     }

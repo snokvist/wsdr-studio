@@ -50,6 +50,7 @@ struct Row {
   uint8_t gen = 0;        // low byte of the stream run (BankMeta.gen): rows of a new run differ
   bool gapped = false;    // from a gapped run (BankMeta::gapped)
   bool offset = false;    // cropped from an offset-tuned capture (the hardware centre is outside)
+  int slot = 0;           // the view it belongs to (0 = A, 1 = B; the engine sets it when encoding)
   double f0 = 0, df = 0;  // Hz of bin 0 (lowest frequency) and bin spacing
   std::vector<float> avg, max; // dBFS, size bins
 };
@@ -59,6 +60,9 @@ public:
   Spectrum();
   ~Spectrum();
   void configure(const DspConfig &c);
+  // Measure FFT plans for every size once (a second or so, on a thread of its own at startup): the
+  // paths then use measured plans. Without it they use estimated ones, about twice as slow.
+  static void warm_plans();
   // One raw LA bank. Resets state when meta.gen changes (new tuning / rate).
   void process(const uint8_t *bank, size_t bytes, const wsdr::BankMeta &meta,
                const std::function<void(const Row &)> &emit);

@@ -20,12 +20,14 @@ uint8_t q(float db) {
 }
 } // namespace
 
-std::vector<uint8_t> encode_row(const Row &r, double t) {
+std::vector<uint8_t> encode_row(const Row &r, double t, int slot) {
   const uint32_t bins = static_cast<uint32_t>(r.avg.size());
   std::vector<uint8_t> b(kRowHeader + 2 * bins);
   put<uint32_t>(b, 0, kRowMagic);
   put<uint16_t>(b, 4, kProtocolVersion);
-  put<uint8_t>(b, 6, static_cast<uint8_t>(r.path | (r.gapped ? 0x80 : 0) | (r.offset ? 0x40 : 0)));
+  if (slot < 0)
+    slot = r.slot;
+  put<uint8_t>(b, 6, static_cast<uint8_t>(r.path | (slot ? 0x10 : 0) | (r.gapped ? 0x80 : 0) | (r.offset ? 0x40 : 0)));
   put<uint8_t>(b, 7, r.gen);
   put<uint32_t>(b, 8, r.seq);
   put<uint32_t>(b, 12, bins);

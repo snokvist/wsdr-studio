@@ -24,12 +24,13 @@ constexpr uint32_t kRowMagic = 0x57525357u; // "WSRW" little-endian
 constexpr size_t kRowHeader = 48;
 constexpr float kDbMin = -150.f, kDbStep = 0.6f; // u8 0..255 covers -150 .. +3 dBFS
 
-std::vector<uint8_t> encode_row(const Row &r, double t);
+// slot: the view slot written in the frame (-1: r.slot)
+std::vector<uint8_t> encode_row(const Row &r, double t, int slot = -1);
 
 struct DecodedRow {
   int path = 0, gen = 0;
   bool gapped = false, offset = false;
-  int slot = 0; // view slot (0 = A, 1 = B; set by the server)
+  int slot = 0; // view slot (0 = A, 1 = B)
   uint32_t seq = 0, bins = 0;
   double t = 0, f0 = 0, df = 0;
   float db_min = 0, db_step = 0;
