@@ -290,7 +290,7 @@ export function Station(p: {
             break;
           case 'status': {
             setStatus(e);
-            if (e.rx?.state === 'streaming') setTunedStale(false); // the new run's centre
+            if (e.rx?.state === 'streaming' && !e.rx.settling) setTunedStale(false); // the new run's centre (settling: the old run, about to end)
             {
               const n = e.rx?.restarts ?? 0, now = Date.now();
               for (let k = lastRestarts; k < n; k++) faultTimes.push(now); // a new open starts again at 0
@@ -365,10 +365,15 @@ export function Station(p: {
   // picked gapped in this session (allow_gapped) stays. (Every wider centre is also a narrower step.)
   const sel = devices.find((d) => devKey(d) === selKey);
   const selMax = sel ? contMsps(sel) : 40;
+  const selGapped = sel?.gapped_msps ?? 0;
   useEffect(() => {
     const widest = Math.max(1, Math.ceil(Math.log2(80 / selMax))); // rate_sel of the widest continuous span
-    setDraft((dr) => (dr.rate_sel < widest && !dr.allow_gapped ? { ...dr, rate_sel: widest } : dr));
-  }, [selMax]);
+    const widestGapped = selGapped > 0 ? Math.max(0, Math.ceil(Math.log2(80 / selGapped))) : widest; // (80 MHz gapped: 8812BU only)
+    setDraft((dr) => {
+      const lo = dr.allow_gapped ? widestGapped : widest;
+      return dr.rate_sel < lo ? { ...dr, rate_sel: lo } : dr;
+    });
+  }, [selMax, selGapped]);
 
   const open = caps.open;
   const opening = status?.state === 'opening' || starting;

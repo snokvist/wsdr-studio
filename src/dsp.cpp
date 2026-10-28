@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "dsp.h"
+
+#include <atomic>
 #include "stream_cu.h" // la_i/la_q, path_b_i/path_b_q
 
 #include <fftw3.h>
@@ -29,19 +31,28 @@ struct Spectrum::Path {
   double row_samples = 0;         // samples consumed in the current row
   double row_t0 = 0;              // gapped runs: when the current row started (clock)
 
-  Path(int idx, int n) : index(idx) {
+  int n = 0;                      // FFT size
+  bool measured = false;          // plan from wisdom (else an estimate until warm_plans() is done)
+
+  Path(int idx, int n_) : index(idx), n(n_) {
     std::lock_guard<std::mutex> l(fftw_plan_mutex());
     in = fftwf_alloc_complex(n);
     out = fftwf_alloc_complex(n);
-    // a measured plan (about half the time of an estimated one) when its wisdom is there (see
-    // warm_plans; on the DSP thread a measurement itself would stall the stream), else an estimate
-    plan = fftwf_plan_dft_1d(n, in, out, FFTW_FORWARD, FFTW_MEASURE | FFTW_WISDOM_ONLY);
-    if (!plan)
-      plan = fftwf_plan_dft_1d(n, in, out, FFTW_FORWARD, FFTW_ESTIMATE);
+    replan();
     const int bins = std::min(n, kMaxBins);
     sum.assign(bins, 0.f);
     max.assign(bins, 0.f);
     one.assign(bins, 0.f);
+  }
+  // a measured plan (about half the time of an estimated one) when its wisdom is there (see
+  // warm_plans; on the DSP thread a measurement itself would stall the stream), else an estimate
+  void replan() { // (the plan mutex held)
+    if (plan)
+      fftwf_destroy_plan(plan);
+    plan = fftwf_plan_dft_1d(n, in, out, FFTW_FORWARD, FFTW_MEASURE | FFTW_WISDOM_ONLY);
+    measured = plan != nullptr;
+    if (!plan)
+      plan = fftwf_plan_dft_1d(n, in, out, FFTW_FORWARD, FFTW_ESTIMATE);
   }
   ~Path() {
     std::lock_guard<std::mutex> l(fftw_plan_mutex());
@@ -54,6 +65,8 @@ struct Spectrum::Path {
 Spectrum::Spectrum() { rebuild(); }
 Spectrum::~Spectrum() = default;
 
+static std::atomic<bool> s_warm{false}; // warm_plans() is done: a Path still on an estimate replans
+
 void Spectrum::warm_plans() {
   for (int n = 1024; n <= 16384; n <<= 1) { // (the sizes configure() allows)
     std::lock_guard<std::mutex> l(fftw_plan_mutex());
@@ -63,6 +76,7 @@ void Spectrum::warm_plans() {
     fftwf_free(in);
     fftwf_free(out);
   }
+  s_warm.store(true, std::memory_order_release);
 }
 
 void Spectrum::configure(const DspConfig &c) {
@@ -81,6 +95,9 @@ void Spectrum::configure(const DspConfig &c) {
     _c.fft = std::min(_c.fft, kGappedMaxFft);
   if (!same) // (a change of the row rate, DC block or the Wi-Fi finder keeps the plans and the rows)
     rebuild();
+  else if (_fs > 0) // (a faster row rate: the samples already in the row count for one row, not many)
+    for (auto &p : _paths)
+      p->row_samples = std::min(p->row_samples, _fs / _c.rows_per_s);
 }
 
 void Spectrum::rebuild() {
@@ -146,6 +163,10 @@ void Spectrum::process(const uint8_t *bank, size_t bytes, const wsdr::BankMeta &
     Path &p = *pp;
     if (p.index == 1 && meta.paths < 2)
       continue; // no path B on this chip
+    if (!p.measured && s_warm.load(std::memory_order_acquire)) { // (the first paths are built before
+      std::lock_guard<std::mutex> l(fftw_plan_mutex());             //  the warm-up is done)
+      p.replan();
+    }
     unpack(bank, ns, p.index, meta.cu, _tmp.data());
     if (_c.dc_remove)
       p.dc.process(_tmp.data(), ns);

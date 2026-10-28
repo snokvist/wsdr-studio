@@ -247,8 +247,8 @@ if (!app.requestSingleInstanceLock()) {
       e.returnValue = s;
     });
     ipcMain.on('wsdr:prefs-save', (e, s) => {
-      if (!ours(e) || typeof s !== 'string' || s.length > 65536) return;
       try {
+        if (!ours(e) || typeof s !== 'string' || s.length > 65536) return;
         fs.writeFileSync(`${prefsFile}.tmp`, s);
         fs.renameSync(`${prefsFile}.tmp`, prefsFile);
       } catch (err) {

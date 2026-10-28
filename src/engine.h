@@ -172,7 +172,7 @@ private:
   std::atomic<int> _rec_path{0};       // path fixed when the recording started
   std::atomic<uint32_t> _rec_gen{0}, _rec_cfg{0}; // the stream run the file belongs to
   std::atomic<uint64_t> _rec_id{0};               // counts recordings: stale stop requests are ignored
-  uint64_t _seen_restarts = 0;                    // poll(): stream faults logged so far
+  std::atomic<uint64_t> _seen_restarts{0};        // poll(): stream faults logged so far (this receiver)
   std::atomic<bool> _rec_stop_requested{false}, _lost_requested{false};
 
   mutable std::mutex _sm; // status strings

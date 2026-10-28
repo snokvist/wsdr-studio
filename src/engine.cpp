@@ -137,9 +137,8 @@ void Engine::poll() {
     return;
   // Fatal only when the worker has ended (a retune error is retried and passes).
   const wsdr::RxStatus st = r->status();
-  if (st.restarts != _seen_restarts) { // (the only record of why: the stream restarts by itself)
-    if (st.restarts > _seen_restarts)
-      std::fprintf(stderr, "wsdr-studiod: view %c: stream fault %llu, restarted: %s\n", 'A' + _slot, static_cast<unsigned long long>(st.restarts), st.last_fault.c_str());
+  if (st.restarts > _seen_restarts) { // (the only record of why: the stream restarts by itself)
+    std::fprintf(stderr, "wsdr-studiod: view %c: stream fault %llu, restarted: %s\n", 'A' + _slot, static_cast<unsigned long long>(st.restarts), st.last_fault.c_str());
     _seen_restarts = st.restarts;
   }
   if (!st.running && (st.state == wsdr::RxState::Lost || st.state == wsdr::RxState::Error) &&
@@ -512,6 +511,7 @@ void Engine::open_adapter(uint16_t pid, const json &c) {
   {
     std::lock_guard<std::mutex> l(_rxm);
     _rx = std::move(r);
+    _seen_restarts = 0; // (the count is per receiver)
   }
   _cb.event(caps());
   _cb.event(settings());
@@ -634,7 +634,7 @@ json Engine::status() const {
   }
   if (const auto r = rx(); r && r->is_open()) {
     const wsdr::RxStatus st = r->status();
-    j["rx"] = {{"state", wsdr::rx_state_name(st.state)}, {"banks", st.banks}, {"restarts", st.restarts},
+    j["rx"] = {{"state", wsdr::rx_state_name(st.state)}, {"banks", st.banks}, {"restarts", st.restarts}, {"settling", st.settling},
                {"channel", st.channel}, {"width", st.width}, {"centre", st.centre_hz}, {"fs", st.fs},
                {"gapped", st.gapped}, {"error", st.error}};
     wsdr::RxSettings v;

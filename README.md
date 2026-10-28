@@ -59,6 +59,7 @@ shaded slot at A's centre is the 8812CU's own notch.
    SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="b812", TAG+="uaccess", MODE="0660", GROUP="plugdev"
    SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="c812", TAG+="uaccess", MODE="0660", GROUP="plugdev"
    RULES
+   sudo rm -f /etc/udev/rules.d/99-wsdr.rules   # (the rule's old name, if an earlier setup left it)
    sudo udevadm control --reload
    ```
 3. **Optional: keep the kernel's Wi-Fi driver off the dongles.** Start takes a dongle over from the
