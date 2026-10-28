@@ -887,7 +887,7 @@ void Engine::dsp_loop() {
         bool room = true;
         {
           std::lock_guard<std::mutex> l(_wm);
-          room = _wq.size() < 256; // ~50 ms at 40 MS/s
+          room = _wq.size() < 1024; // ~200 ms at 40 MS/s: a burst of traffic is decoded after it, not dropped
           if (room && !_wpool.empty()) {
             w.x = std::move(_wpool.back());
             _wpool.pop_back();

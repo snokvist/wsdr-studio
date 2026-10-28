@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 # Build wsdr-studio-x86_64.AppImage.
 #   - web UI: built on the host (npm); static files, architecture independent
-#   - backend: built inside Ubuntu 22.04 (needs glibc >= 2.34 at run time) for wide compatibility
+#   - backend: built inside Ubuntu 22.04 with its g++-12 (needs glibc >= 2.34 at run time) for wide compatibility
 #   - libraries: linuxdeploy bundles FFTW; libusb is added explicitly (linuxdeploy's exclude list
 #     skips it); libstdc++ is linked statically; libudev stays the host's (it must match the host's udev)
 #   - desktop shell: the pinned Electron release with desktop/ as its app; AppRun starts it, and it
@@ -49,10 +49,13 @@ $DOCKER run --rm -v "$R":/src:ro -v "$OUT":/out -e HOST_UID="$(id -u)" -e HOST_G
     -e ELECTRON_ZIP="/out/tools/electron-v$ELECTRON_VERSION-linux-x64.zip" ubuntu:22.04 bash -euo pipefail -c '
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
-  apt-get install -y -qq --no-install-recommends cmake g++ make pkg-config libusb-1.0-0-dev libfftw3-dev \
+  apt-get install -y -qq --no-install-recommends cmake g++-12 make pkg-config libusb-1.0-0-dev libfftw3-dev \
       libboost-dev nlohmann-json3-dev binutils-mipsel-linux-gnu xxd file ca-certificates unzip >/dev/null
   # (libstdc++ linked in: the host runtime may be older than GCC 12, e.g. RHEL/Alma/Rocky 9)
-  cmake -S /src -B /tmp/b -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc" >/dev/null
+  # g++-12 (the 22.04 archive), not 22.04 default g++ 11: GCC 11 codes the Wi-Fi finder badly (complex
+  # accumulators in memory) and the finder thread then drops banks on a busy channel; GCC 12 does not
+  cmake -S /src -B /tmp/b -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_C_COMPILER=gcc-12 -DCMAKE_CXX_COMPILER=g++-12 \
+      -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc" >/dev/null
   cmake --build /tmp/b -j"$(nproc)" --target wsdr-studiod test_core
   /tmp/b/test_core
   rm -rf /tmp/AppDir && DESTDIR=/tmp/AppDir cmake --install /tmp/b >/dev/null

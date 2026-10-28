@@ -1043,11 +1043,18 @@ std::vector<cf> Decoder::snippet(uint64_t from, uint64_t len, double off) const 
   std::vector<cf> z20;
   const size_t nt = _lp.size();
   z20.reserve(len / 2);
+  // (on the floats, with plain accumulators: with std::complex GCC 11 keeps the sum in memory and
+  // this loop, the finder's hottest, ran ~4x slower in the AppImage build than on the dev machine)
+  const float *yf = reinterpret_cast<const float *>(y.data());
   for (size_t m = 0; 2 * m + nt <= len; m++) {
-    cf acc = 0;
-    for (size_t k = 0; k < nt; k++)
-      acc += y[2 * m + k] * _lp[k];
-    z20.push_back(acc);
+    const float *p = yf + 4 * m;
+    float re = 0, im = 0;
+    for (size_t k = 0; k < nt; k++) {
+      const float w = _lp[k];
+      re += p[2 * k] * w;
+      im += p[2 * k + 1] * w;
+    }
+    z20.emplace_back(re, im);
   }
   return z20;
 }
