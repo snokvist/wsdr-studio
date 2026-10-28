@@ -51,7 +51,7 @@ $DOCKER run --rm -v "$R":/src:ro -v "$OUT":/out -e HOST_UID="$(id -u)" -e HOST_G
   apt-get update -qq
   apt-get install -y -qq --no-install-recommends cmake g++ make pkg-config libusb-1.0-0-dev libfftw3-dev \
       libboost-dev nlohmann-json3-dev binutils-mipsel-linux-gnu xxd file ca-certificates unzip >/dev/null
-  # (libstdc++ linked in: the host's may be older than GCC 12's, e.g. RHEL/Alma/Rocky 9)
+  # (libstdc++ linked in: the host runtime may be older than GCC 12, e.g. RHEL/Alma/Rocky 9)
   cmake -S /src -B /tmp/b -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc" >/dev/null
   cmake --build /tmp/b -j"$(nproc)" --target wsdr-studiod test_core
   /tmp/b/test_core
