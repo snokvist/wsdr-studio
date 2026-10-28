@@ -150,9 +150,9 @@ button.toggle.on .switch i { transform: translateX(14px); background: #0b0e13; }
 }
 .vhead > * { flex-shrink: 0; }
 .vhead .spacer { flex-shrink: 1; min-width: 0; }
-.vhead .amber, .vhead .chlabel { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vhead .amber, .vhead .badge, .vhead .chlabel { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @container view (max-width: 540px) { .vhead .chlabel, .vhead .long { display: none; } }
-@container view (max-width: 700px) { .vhead .ltext, .vhead .stext, .vhead:has(.amber) .chlabel { display: none; } }
+@container view (max-width: 700px) { .vhead .ltext, .vhead .stext, .vhead:has(.amber, .badge) .chlabel, .vhead:has(.amber, .badge) .long { display: none; } }
 .view.sel .vhead { background: #13202c; }
 .view.sel.s0 .vhead { border-top-color: var(--view-a); }
 .view.sel.s1 .vhead { border-top-color: var(--view-b); }
