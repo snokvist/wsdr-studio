@@ -139,7 +139,7 @@ void Engine::poll() {
   const wsdr::RxStatus st = r->status();
   if (st.restarts != _seen_restarts) { // (the only record of why: the stream restarts by itself)
     if (st.restarts > _seen_restarts)
-      std::fprintf(stderr, "wsdr-studiod: view %c: stream fault %llu, restarted: %s\n", 'A' + _slot, static_cast<unsigned long long>(st.restarts), st.error.c_str());
+      std::fprintf(stderr, "wsdr-studiod: view %c: stream fault %llu, restarted: %s\n", 'A' + _slot, static_cast<unsigned long long>(st.restarts), st.last_fault.c_str());
     _seen_restarts = st.restarts;
   }
   if (!st.running && (st.state == wsdr::RxState::Lost || st.state == wsdr::RxState::Error) &&
