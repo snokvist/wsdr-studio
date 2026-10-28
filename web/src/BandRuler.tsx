@@ -228,7 +228,7 @@ export function BandRuler(p: {
             ))}
             strong
           </span>
-          <span>strongest signal seen this session · wheel / arrow keys: 5 MHz</span>
+          <span>strongest signal seen this session{p.range ? '' : ' · wheel / arrow keys: 5 MHz'}</span>
         </div>
       )}
     </div>

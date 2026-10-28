@@ -15,24 +15,28 @@ import { SpectralMap } from './SpectralMap';
 import { survey, type Survey } from './survey';
 import { NumField, Seg } from './ui';
 import {
-  FFTS, LOCKED, SLOT_NAME, bandOf, baseName, bytes, devKey, gappedDuty, isDual, loadPrefs, savePrefs, snap, spanLabel, type Locks, type Mode, type Prefs, type Scale,
+  FFTS, LOCKED, SLOT_NAME, bandOf, baseName, bytes, contMsps, devKey, gappedDuty, isDual, loadPrefs, savePrefs, snap, spanLabel, type Locks, type Mode, type Prefs, type Scale,
 } from './util';
 
-// [keys, what, two-view modes only]
-const KEYS: [string, string, boolean][] = [
-  ['← →', 'tune 5 MHz (Shift: 20 MHz)', false],
-  ['[ ]', 'narrower / wider span (continuous spans; gapped ones are picked in the Span list)', false],
-  ['0–9', 'type a frequency (Enter applies)', false],
-  ['A B', 'select view A / B', true],
-  ['Enter', 'go to the frequency field', false],
-  ['Space', 'Start / Stop', false],
-  ['Ctrl+R', 'Record / end the recording', false],
-  ['L', 'link the frequencies of A and B', true],
-  ['O', 'the other view’s overlay (Compare)', true],
-  ['Ctrl+B', 'sidebar', false],
-  ['?', 'this list (Esc closes)', false],
-  ['Double-click', 'on the spectrum: tune there', false],
-  ['Wheel', 'over the band ruler: 5 MHz steps', false],
+// [keys, what, the modes it acts in]
+const ALL: Mode[] = ['single', 'panorama', 'compare', 'map'];
+const VIEWS: Mode[] = ['single', 'panorama', 'compare'];
+const TWO: Mode[] = ['panorama', 'compare'];
+const KEYS: [string, string, Mode[]][] = [
+  ['← →', 'tune 5 MHz (Shift: 20 MHz)', VIEWS],
+  ['[ ]', 'narrower / wider span (continuous spans; gapped ones are picked in the Span list)', VIEWS],
+  ['0–9', 'type a frequency (Enter applies)', VIEWS],
+  ['A B', 'select view A / B', TWO],
+  ['Enter', 'go to the frequency field', VIEWS],
+  ['Space', 'Start / Stop', VIEWS],
+  ['Space', 'start / stop the sweep', ['map']],
+  ['Ctrl+R', 'Record / end the recording', VIEWS],
+  ['L', 'link the frequencies of A and B', TWO],
+  ['O', 'the other view’s overlay', ['compare']],
+  ['Ctrl+B', 'sidebar', ALL],
+  ['?', 'this list (Esc closes)', ALL],
+  ['Double-click', 'on the spectrum: tune there', VIEWS],
+  ['Wheel', 'over the band ruler: 5 MHz steps', VIEWS],
 ];
 const MODES: [Mode, string, string][] = [
   ['single', 'Single', 'One view'],
@@ -48,14 +52,7 @@ type RestoreItem = {
 };
 
 export default function App() {
-  const [prefs, setPrefs] = useState<Prefs>(() => {
-    const p = loadPrefs();
-    if (new URLSearchParams(location.search).get('dual') === '1' && p.mode === 'single') {
-      p.mode = 'panorama'; // started with --dual
-      savePrefs(p);
-    }
-    return p;
-  });
+  const [prefs, setPrefs] = useState<Prefs>(loadPrefs);
   const updatePrefs = (p: Partial<Prefs>) =>
     setPrefs((old) => {
       const n = { ...old, ...p };
@@ -328,7 +325,7 @@ export default function App() {
     setMapStep(null);
     setMapOther(null);
     const dev = devices.find((d) => devKey(d) === views[slot]?.selKey);
-    const rate_sel = r?.rate_sel ?? (dev ? Math.max(1, Math.ceil(Math.log2(80 / dev.max_msps))) : 4); // else the widest continuous
+    const rate_sel = r?.rate_sel ?? (dev ? Math.max(1, Math.ceil(Math.log2(80 / contMsps(dev)))) : 4); // else the widest continuous
     const args = { freq: f !== null ? snap(f) : r ? r.freq : views[slot]?.freq ?? 5180e6, rate_sel, wide: true };
     const shownAfter = (i: number) => (isDual(to) ? true : i === 0);
     const key = views[slot]?.selKey ?? null;
@@ -583,14 +580,14 @@ export default function App() {
           <div className="sheet" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" onClick={(e) => e.stopPropagation()}>
             <h2>Keyboard</h2>
             <dl>
-              {KEYS.filter(([, , two]) => !two || dual).map(([keys, what]) => (
-                <div key={keys}>
+              {KEYS.filter(([, , modes]) => modes.includes(mode)).map(([keys, what]) => (
+                <div key={keys + what}>
                   <dt>{keys}</dt>
                   <dd>{what}</dd>
                 </div>
               ))}
             </dl>
-            <p className="note">Keys act on the selected view{dual ? ' (the coloured header)' : ''}; not while typing in a field.</p>
+            <p className="note">{inMap ? 'Keys act on the map' : `Keys act on the selected view${dual ? ' (the coloured header)' : ''}`}; not while typing in a field.</p>
             <button autoFocus onClick={() => setHelp(false)}>
               Close
             </button>
@@ -724,6 +721,7 @@ export default function App() {
                           <>
                             <i className="wkey" style={{ background: WIFI_COLOUR.L }} /> legacy <i className="wkey" style={{ background: WIFI_COLOUR.H }} /> 11n{' '}
                             <i className="wkey" style={{ background: WIFI_COLOUR.V }} /> 11ac{' '}
+                            <i className="wkey" style={{ background: WIFI_COLOUR.X }} /> 11ax/be{' '}
                             <i className="wkey" style={{ background: WIFI_COLOUR.B }} /> 11b{' '}
                             <i className="wkey" style={{ background: OTHER_COLOUR }} /> other
                           </>
@@ -844,6 +842,7 @@ export default function App() {
                   mapStop();
                 }}
                 note={mapNote}
+                lost={!!views[mapSlot]?.lost}
               />
             )}
             {mode === 'panorama' && (

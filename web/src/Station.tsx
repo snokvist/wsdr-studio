@@ -10,7 +10,7 @@ import { Constellation } from './Constellation';
 import type { Caps, Device, DspSettings, FramePoints, Rate, RxSettings, Row, Status, WifiFrame } from './protocol';
 import { Seg } from './ui';
 import {
-  ANT_COLOUR, LOCKED, SLOT_NAME, UDEV_CMD, isDual, VIEW_COLOUR, bandOf, baseName, bytes, chanShort, devKey, devLabel, devTitle, fmtClock,
+  ANT_COLOUR, LOCKED, SLOT_NAME, UDEV_CMD, isDual, VIEW_COLOUR, bandOf, baseName, bytes, chanShort, contMsps, devKey, devLabel, devTitle, fmtClock,
   fmtDur, gappedDuty, loadPrefs, mhz, ratesFor, snap, spanLabel, type Mode, type Prefs, type Scale, type Tuning,
 } from './util';
 
@@ -111,6 +111,9 @@ export function Station(p: {
   // not shown, its count since Start would stay forever)
   const [recentFaults, setRecentFaults] = useState(0);
   const [wifiSkipped, setWifiSkipped] = useState(0); // when the Wi-Fi finder last fell behind (ms)
+  // the radio's centre in status lags a retune (status comes every 0.5 s, and only once the new run
+  // streams): until a status of the new run arrives, the request is shown as the centre
+  const [tunedStale, setTunedStale] = useState(false);
   // the frame inspector: a clicked Wi-Fi mark's frame and, once the backend answered, its points
   const [inspect, setInspect] = useState<{ id: number; data: FramePoints | null; error: string | null } | null>(null);
   const closeInspect = useCallback(() => setInspect(null), []);
@@ -219,8 +222,9 @@ export function Station(p: {
             known.current = e.devices.map(devKey);
             // keep the pick; else the first adapter the other view has not picked (nothing picked yet,
             // at a start in a two-view mode: B takes the second)
+            // (view B picks nothing rather than A's adapter: a second Start there would only say "busy")
             const other = view.current.other;
-            const free = other !== null ? e.devices.find((x: Device) => devKey(x) !== other) ?? e.devices[0] : e.devices[slot] ?? e.devices[0];
+            const free = other !== null ? e.devices.find((x: Device) => devKey(x) !== other) ?? (slot ? undefined : e.devices[0]) : e.devices[slot] ?? (slot ? undefined : e.devices[0]);
             setSelKey((k) => (k !== null && e.devices.some((x: Device) => devKey(x) === k) ? k : free ? devKey(free) : null));
             break;
           }
@@ -257,6 +261,7 @@ export function Station(p: {
                 if (lastRx && lastRx.freq !== e.rx.freq) updatePrefs({ retuned: true });
                 rememberTuning({ freq: e.rx.freq, rate_sel: e.rx.rate_sel, gain_db: e.rx.gain_db, agc: e.rx.agc });
               }
+              if (lastRx && lastRx.freq !== e.rx.freq) setTunedStale(true);
               lastRx = e.rx;
               live.current.freq = e.rx.freq;
               live.current.rateSel = e.rx.rate_sel;
@@ -285,6 +290,7 @@ export function Station(p: {
             break;
           case 'status': {
             setStatus(e);
+            if (e.rx?.state === 'streaming') setTunedStale(false); // the new run's centre
             {
               const n = e.rx?.restarts ?? 0, now = Date.now();
               for (let k = lastRestarts; k < n; k++) faultTimes.push(now); // a new open starts again at 0
@@ -354,11 +360,14 @@ export function Station(p: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // A remembered 40 MHz tuning on an adapter that cannot do it (USB 2, 8812CU): clamp the draft.
+  // Before Start the draft shows what Start opens: a span this adapter carries continuously. A
+  // remembered span (a gapped one, or 40 MHz on an 8812CU) never opens gapped by itself; one the user
+  // picked gapped in this session (allow_gapped) stays. (Every wider centre is also a narrower step.)
   const sel = devices.find((d) => devKey(d) === selKey);
-  const selMax = sel?.max_msps ?? 40; // continuous: a remembered wide span never opens gapped by itself
+  const selMax = sel ? contMsps(sel) : 40;
   useEffect(() => {
-    if (selMax < 40) setDraft((dr) => (dr.rate_sel < 4 ? { ...dr, rate_sel: 4 } : dr)); // every 40 MHz centre is also a 5 MHz step
+    const widest = Math.max(1, Math.ceil(Math.log2(80 / selMax))); // rate_sel of the widest continuous span
+    setDraft((dr) => (dr.rate_sel < widest && !dr.allow_gapped ? { ...dr, rate_sel: widest } : dr));
   }, [selMax]);
 
   const open = caps.open;
@@ -367,6 +376,7 @@ export function Station(p: {
   const rxState = open ? status?.rx?.state ?? 'starting' : 'stopped';
   const recording = status?.record.active ?? false;
   const locked = (open && recording) || opening; // recording: a change would end the file; opening: it would be lost
+  const lockedWhy = opening && !recording ? 'Starting… wait a moment' : LOCKED;
 
   const fsNow = 80e6 / (1 << cur.rate_sel);
   const chan = channelAt(cur.freq, 20); // by centre frequency only (the span does not pick a channel)
@@ -378,7 +388,7 @@ export function Station(p: {
   const run = status?.rx;
   const hwFs = run?.hw_fs ?? run?.fs ?? 0;
   const gappedPct = run?.gapped && msps > 0 && hwFs ? Math.round(((msps * 1e6) / hwFs) * 100) : null;
-  const tuned = run?.centre ?? 0;
+  const tuned = tunedStale || run?.state !== 'streaming' ? cur.freq : run?.centre ?? 0;
   const chip = caps.chip ?? sel?.chip ?? '';
   const twoPaths = (caps.paths ?? 1) === 2;
   const ghost = mode === 'compare' && prefs.ghost; // the other view's average over this one
@@ -516,7 +526,7 @@ export function Station(p: {
         else addBanner(gapped || runGapped ? 'Recording needs a continuous span' : 'Recording starts while streaming');
       },
       spanStep: (dir) => {
-        if (locked) return addBanner(LOCKED);
+        if (locked) return addBanner(lockedWhy);
         // continuous spans only: a gapped one is picked in the Span list, on purpose (from a gapped
         // span, narrower is the widest continuous one)
         const ok = rates.filter((r) => !r.gapped).sort((a, b) => a.fs - b.fs);
@@ -525,7 +535,7 @@ export function Station(p: {
         if (next && next.rate_sel !== cur.rate_sel) userSet({ rate_sel: next.rate_sel, wide: true });
       },
       typeFreq: (digit) => {
-        if (locked) return addBanner(LOCKED);
+        if (locked) return addBanner(lockedWhy);
         if (digit) setFreqText(digit);
         freqInput.current?.focus();
         if (!digit) freqInput.current?.select(); // Enter: the field, its text selected
@@ -609,7 +619,7 @@ export function Station(p: {
     const f = Math.round(parseFloat(freqText) * 1e6);
     if (!Number.isFinite(f) || f < 2.3e9 || f > 6.2e9) {
       setFreqText(mhz(cur.freq, 3));
-      if (freqText.trim()) addBanner('Frequency must be between 2300 and 6200 MHz', 'error');
+      if (freqText.trim()) addBanner('Frequency must be between 2300 and 6200 MHz'); // (a slip: not a lasting error)
       return;
     }
     const t = snap(f); // the radio tunes in 5 MHz steps
@@ -641,12 +651,13 @@ export function Station(p: {
   const warn: string[] = [...dropWarn];
   if (open && st) {
     if (recentFaults > 0) warn.push(`stream restarted after a fault (${recentFaults}× in the last minute)`);
-    if (Date.now() - wifiSkipped < 60000) warn.push('Wi-Fi marks: some samples were not searched (the computer could not keep up)');
+    if (Date.now() - wifiSkipped < 60000) warn.push('Wi-Fi marks: some samples were not searched (the frame finder could not keep up)');
     if (status!.dsp_load > 0.8) warn.push(`DSP ${(status!.dsp_load * 100).toFixed(0)} %`);
     if (rxState === 'streaming' && st.fs && !st.gapped && msps > 0 && msps < 0.95 * (st.fs / 1e6)) warn.push(`input ${msps.toFixed(2)} MS/s`);
   }
   if (st?.error) warn.push(st.error);
-  if (!open && status?.error) warn.push(status.error);
+  // (unplugged: the card says it restarts by itself, not "press Start"; a failed Start is in its strip)
+  if (!open && !lost && status?.error && !banners.some((b) => b.kind === 'error' && b.text === status.error)) warn.push(status.error);
   const dotClass =
     fatal || !connected ? 'dot bad'
     : opening || (rxState === 'starting' && !st?.error) ? 'dot warn' // a routine restart (retune, span) is not a fault
@@ -657,7 +668,7 @@ export function Station(p: {
   const recRate = fsNow * 4; // bytes/s (int16 I + Q)
   const diskFree = status?.disk_free ?? 0;
   const secsLeft = diskFree / recRate;
-  const lockTitle = locked ? LOCKED : undefined;
+  const lockTitle = locked ? lockedWhy : undefined;
   const runGapped = !!run?.gapped;
   const recTitle = !recording && gapped
     ? `Recording needs a continuous span (${spanLabel(contMax)} or less on this adapter); gapped spans sample only part of the time`
@@ -717,10 +728,13 @@ export function Station(p: {
         {sel && sel.driver && sel.driver !== 'usbfs' && !open && (
           <span className="note">The kernel driver <code>{sel.driver}</code> is using this adapter; ▶ Start takes it over.</span>
         )}
-        {sel && sel.pid === 0xb812 && sel.speed_mbps < 5000 && !open && (
+        {sel && sel.pid === 0xb812 && !open && sel.speed_mbps < 5000 && (
           <span className="note">Connected at USB 2: ▶ Start switches it to USB 3 when the port allows (continuous 10–40 MHz need USB 3).</span>
         )}
-        {(open || sel) && (
+        {sel && sel.pid === 0xb812 && open && caps.superspeed === false && (
+          <span className="note">At USB 2: 10–40 MHz only gapped. Use a USB 3 port and cable, then replug.</span>
+        )}
+        {(open || sel) && mode !== 'map' && (
           <span className="note" title={diskFree ? `${bytes(diskFree)} free where recordings go` : undefined}>
             {gapped
               ? `Recording needs a continuous span (${spanLabel(contMax)} or less here)`
@@ -848,7 +862,13 @@ export function Station(p: {
               freqFocused.current = false;
               commitFreq();
             }}
-            onKeyDown={(e) => e.key === 'Enter' && commitFreq()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') commitFreq();
+              else if (e.key === 'Escape') {
+                setFreqText(mhz(cur.freq, 3)); // as it was; the blur then changes nothing
+                freqInput.current?.blur();
+              }
+            }}
             title="Centre frequency in MHz (Enter to apply). The radio tunes in 5 MHz steps."
           />
           <button aria-label="Tune up 5 MHz (Shift: 20 MHz)" disabled={locked} onClick={(e) => tuneTo(cur.freq + (e.shiftKey ? 20e6 : 5e6))}>
@@ -880,7 +900,9 @@ export function Station(p: {
         {/* Panorama: one legend on the stitched plot instead */}
         {mode !== 'panorama' && <div className="legend">
           {legend.map(([label, colour, on, fn]) => (
-            <button key={label} className={on ? 'on' : 'off'} aria-pressed={on} aria-label={label} onClick={fn} title={`${on ? 'Hide' : 'Show'} ${label}${dual && !label.startsWith('Ant') ? ' (both views)' : ''}`}>
+            <button key={label} className={on ? 'on' : 'off'} aria-pressed={on} aria-label={label} onClick={fn} title={`${on ? 'Hide' : 'Show'} ${label}${dual && !label.startsWith('Ant') ? ' (both views)' : ''}${
+              label === 'peak' ? '. The strongest FFT frame of each row: a burst shorter than a frame reads lower when it straddles two' : ''
+            }`}>
               <span className="swatch" style={{ background: colour }} />
               <span className="ltext">{label}</span>
             </button>
@@ -913,7 +935,11 @@ export function Station(p: {
                 </>
               )
             : gapped
-              ? `● Rec · ≤ ${spanLabel(contMax)}`
+              ? (
+                  <>
+                    ● Rec<span className="long"> · ≤ {spanLabel(contMax)}</span>
+                  </>
+                )
               : '● Rec'}
         </button>
       </header>
@@ -974,7 +1000,7 @@ export function Station(p: {
               <path d="M8 11V8a4 4 0 0 1 8 0v3" />
             </svg>
             <h2>{sel.model} found, but this user cannot open it</h2>
-            <p>Run this once in the wifi-sdr folder (it asks for your password), then unplug and replug the adapter:</p>
+            <p>Run this once in a terminal (it asks for your password), then unplug and replug the adapter:</p>
             <code className="cmd">{UDEV_CMD}</code>
             <button onClick={() => copy(UDEV_CMD)}>Copy command</button>
           </div>

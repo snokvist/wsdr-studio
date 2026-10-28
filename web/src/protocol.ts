@@ -11,7 +11,7 @@ export type Device = {
 };
 export type Caps = {
   open: boolean; adapter?: string; pid?: number; bus?: number; port?: string; chip?: string; superspeed?: boolean; paths?: number;
-  rates?: Rate[]; gain_max?: number; gain_step?: number; wide_capable?: boolean;
+  rates?: Rate[]; gain_max?: number; gain_step?: number;
 };
 // allow_gapped: a gapped span may be used (only ever because the user picked one)
 export type RxSettings = { freq: number; rate_sel: number; wide: boolean; agc: boolean; gain_db: number; allow_gapped?: boolean };
@@ -22,14 +22,14 @@ export type DspSettings = { fft: number; rows_per_s: number; paths: 'a' | 'b' | 
 // airtime (us), SNR (dB)
 // A 6 Mb/s frame decoded whole adds its sender's address, and a beacon its network (BSSID, name, channel).
 export type WifiFrame = [
-  t: number, mhz: number, bw: number, fmt: 'L' | 'H' | 'V' | 'B', rate: number, len: number, us: number, snr: number,
+  t: number, mhz: number, bw: number, fmt: 'L' | 'H' | 'V' | 'X' | 'B', rate: number, len: number, us: number, snr: number,
   ta?: string | null, bssid?: string | null, ssid?: string | null, ch?: number,
 ];
 // One frame's equalised subcarriers (the "points" command; see Engine::points): z holds I, Q pairs at
 // `scale` per unit: n_lsig L-SIG points, n_sig2 HT-SIG / VHT-SIG-A ones, then the payload's (bits per
 // subcarrier `bits`, 0: none). EVM in dB (payload: null when none), carrier offset in Hz and ppm.
 export type FramePoints = {
-  frame: number; t: number; mhz: number; bw: number; fmt: 'L' | 'H' | 'V' | 'B'; rate: number; len: number; snr: number;
+  frame: number; t: number; mhz: number; bw: number; fmt: 'L' | 'H' | 'V' | 'X' | 'B'; rate: number; len: number; snr: number;
   cfo_hz: number; cfo_ppm: number; evm_lsig_db: number; evm_db: number | null; bits: number; n_lsig: number; n_sig2: number;
   scale: number; z: number[];
   ta?: string; ssid?: string; // a 6 Mb/s frame decoded whole: its sender; a beacon: its network

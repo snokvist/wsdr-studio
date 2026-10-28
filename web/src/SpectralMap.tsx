@@ -30,6 +30,7 @@ export function SpectralMap(p: {
   onStart: () => void; onStop: () => void; onPick: (f: number) => void; onStep: (centre: number | null, fs: number) => void;
   onFail: (why: string) => void; // the sweep gave up (the adapter stopped answering)
   note: string | null;            // why the sweep stopped by itself
+  lost: boolean;                  // the view's adapter was unplugged (it starts again when it is back)
 }) {
   const plan = sweepPlan(p.range, p.dev, p.gappedOk);
   const spRef = useRef<HTMLCanvasElement>(null);
@@ -370,10 +371,13 @@ export function SpectralMap(p: {
           </span>
         )}
         {p.note && <span className="warn-note">{p.note}</span>}
+        {/* the view's cards are hidden under the map: its states are said here */}
+        {p.lost && <span className="warn-note">adapter unplugged: the sweep goes on by itself when it is back</span>}
+        {!p.lost && p.dev && !p.dev.can_open && <span className="warn-note">this user cannot open the adapter: see the Single view for the command to run</span>}
         <span className="spacer" />
         <span className="state">
-          <span className={active ? 'dot ok' : p.opening ? 'dot warn' : 'dot'} />
-          <span className="stext">{active ? 'sweeping' : p.opening ? 'starting…' : 'stopped'}</span>
+          <span className={active ? 'dot ok' : p.opening ? 'dot warn' : p.lost ? 'dot bad' : 'dot'} />
+          <span className="stext">{active ? 'sweeping' : p.opening ? 'starting…' : p.lost ? 'unplugged' : 'stopped'}</span>
         </span>
         <button
           onClick={() => {
@@ -399,9 +403,6 @@ export function SpectralMap(p: {
             ▶ Start
           </button>
         )}
-        <button className="rec" disabled title="Recording needs a continuous span: a sweep jumps between frequencies">
-          ● Rec
-        </button>
       </header>
       <div className="smap-plots">
         <canvas ref={spRef} className="spectrum" onMouseMove={(e) => onMove(e, false)} onMouseLeave={() => setHover(null)} onClick={(e) => onClick(e, false)} />

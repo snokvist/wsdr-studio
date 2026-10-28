@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FramePoints } from './protocol';
 
-const FORMAT: Record<string, string> = { L: 'Legacy OFDM', H: '802.11n (HT)', V: '802.11ac (VHT)', B: '802.11b' };
+const FORMAT: Record<string, string> = { L: 'Legacy OFDM', H: '802.11n (HT)', V: '802.11ac (VHT)', X: '802.11ax/be (HE/EHT)', B: '802.11b' };
 const MOD: Record<number, string> = { 1: 'BPSK', 2: 'QPSK', 4: '16-QAM', 6: '64-QAM', 8: '256-QAM' };
 // why an HT / VHT frame's payload is not shown (FramePoints.skip)
 const SKIP: Record<number, string> = {
@@ -13,6 +13,7 @@ const SKIP: Record<number, string> = {
   3: 'It is not a plain single-stream frame (more streams, STBC, or an MCS this does not read); the payload is shown for single-stream frames.',
   4: 'Its payload had not arrived (the stream restarted, or the frame was cut short).',
   5: 'It carries no payload: a sounding frame (NDP), sent to measure the channel.',
+  6: 'An 802.11ax/be frame: its signal fields and payload are not read; L-SIG and RL-SIG are shown.',
 };
 const R = 1.6; // the plot spans -R..R on both axes (unit mean power: 64-QAM's outer levels sit at 1.08)
 type Group = 'lsig' | 'sig2' | 'data';
@@ -133,7 +134,7 @@ export function Constellation(p: { data: FramePoints | null; error: string | nul
           <canvas ref={ref} className="iq" />
           <div className="legend">
             {chip('lsig', 'L-SIG', d.n_lsig)}
-            {chip('sig2', d.fmt === 'V' ? 'VHT-SIG-A' : 'HT-SIG', d.n_sig2)}
+            {chip('sig2', d.fmt === 'V' ? 'VHT-SIG-A' : d.fmt === 'X' ? 'RL-SIG · SIG-A' : 'HT-SIG', d.n_sig2)}
             {chip('data', `payload${d.bits ? ` ${MOD[d.bits]}` : ''}`, nData)}
           </div>
           <dl className="kv">
