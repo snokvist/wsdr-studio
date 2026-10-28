@@ -4,7 +4,7 @@
 #   - web UI: built on the host (npm); static files, architecture independent
 #   - backend: built inside Ubuntu 22.04 (needs glibc >= 2.34 at run time) for wide compatibility
 #   - libraries: linuxdeploy bundles FFTW; libusb is added explicitly (linuxdeploy's exclude list
-#     skips it); libudev and libstdc++ stay the host's (libudev must match the host's udev)
+#     skips it); libstdc++ is linked statically; libudev stays the host's (it must match the host's udev)
 #   - desktop shell: the pinned Electron release with desktop/ as its app; AppRun starts it, and it
 #     starts the backend (Electron uses the host's usual desktop libraries: GTK 3, NSS, ALSA, GBM)
 #   - AppImage: appimagetool with the pinned static type-2 runtime (no libfuse2 needed on the host)
@@ -51,7 +51,8 @@ $DOCKER run --rm -v "$R":/src:ro -v "$OUT":/out -e HOST_UID="$(id -u)" -e HOST_G
   apt-get update -qq
   apt-get install -y -qq --no-install-recommends cmake g++ make pkg-config libusb-1.0-0-dev libfftw3-dev \
       libboost-dev nlohmann-json3-dev binutils-mipsel-linux-gnu xxd file ca-certificates unzip >/dev/null
-  cmake -S /src -B /tmp/b -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr >/dev/null
+  # (libstdc++ linked in: the host's may be older than GCC 12's, e.g. RHEL/Alma/Rocky 9)
+  cmake -S /src -B /tmp/b -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc" >/dev/null
   cmake --build /tmp/b -j"$(nproc)" --target wsdr-studiod test_core
   /tmp/b/test_core
   rm -rf /tmp/AppDir && DESTDIR=/tmp/AppDir cmake --install /tmp/b >/dev/null

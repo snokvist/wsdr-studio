@@ -5,7 +5,9 @@
 // stopped by closing its stdin (it then finalises any recording and exits).
 //
 // Backend options given to the app are passed on: --pid --freq --rate --record-dir --port, --no-usb3.
-// --dual opens the window in dual-adapter mode.
+// The backend's log (its stderr) goes to backend.log in the app's data folder (~/.config/wsdr-studio).
+// The page's preferences live in prefs.json there (through the preload: they must not depend on the
+// page's origin, which includes the backend's port).
 // WSDR_STUDIOD: the backend binary. WSDR_DEV_URL: load this URL instead (Vite dev server).
 'use strict';
 const { app, BrowserWindow, Menu, dialog, ipcMain, session } = require('electron');
@@ -21,6 +23,11 @@ let quitting = false;
 let win = null;
 let origin = '';
 let token = '';
+let log = null; // backend.log
+const logWrite = (d) => {
+  process.stderr.write(d);
+  if (log) log.write(d);
+};
 
 function backendArgs() {
   const out = ['--ui-pipe'];
@@ -68,7 +75,7 @@ function startBackend() {
     }
     child.on('error', (e) => finish(new Error(`cannot run ${exe}: ${e.message}`)));
     child.stderr.on('data', (d) => {
-      process.stderr.write(d);
+      logWrite(d);
       err = (err + d).slice(-4000);
     });
     const onOut = (d) => {
@@ -152,15 +159,25 @@ function createWindow() {
     if (c === 1) e.preventDefault(); // = unload anyway
   });
   win.on('closed', () => (win = null));
-  // --dual: open in dual-adapter mode (the page reads ?dual=1 once and remembers it)
-  const q = process.argv.includes('--dual') ? '?dual=1' : '';
-  win.loadURL((process.env.WSDR_DEV_URL || `${origin}/`) + q);
+  // The page's process died (out of memory on a long session, a GPU crash): a blank window otherwise,
+  // with the backend streaming on. Loaded again, the page reconnects and the views come back (any
+  // recording goes on). A page that dies on every load is left blank after three tries in a minute.
+  const crashes = [];
+  win.webContents.on('render-process-gone', (_e, d) => {
+    if (d.reason === 'clean-exit' || !win) return;
+    const now = Date.now();
+    crashes.push(now);
+    while (crashes.length && now - crashes[0] > 60000) crashes.shift();
+    logWrite(`wsdr-studio: the page's process ended (${d.reason}, exit code ${d.exitCode})${crashes.length <= 3 ? ': loading it again' : ''}\n`);
+    if (crashes.length <= 3) win.reload();
+  });
+  win.loadURL(process.env.WSDR_DEV_URL || `${origin}/`);
 }
 
 if (!app.requestSingleInstanceLock()) {
   app.quit(); // the running one gets 'second-instance' and shows its window
 } else {
-  app.on('second-instance', () => {
+  app.on('second-instance', (_e, argv) => {
     if (!win) {
       if (quitting)
         dialog.showMessageBox({ type: 'info', message: 'wsdr-studio is still closing (saving a recording)', detail: 'Start it again in a moment.' });
@@ -168,10 +185,20 @@ if (!app.requestSingleInstanceLock()) {
     }
     if (win.isMinimized()) win.restore();
     win.focus();
+    if (argv.some((a) => PASS.has(a.split('=')[0]) || PASS_FLAGS.has(a)))
+      dialog.showMessageBox(win, { type: 'info', message: 'wsdr-studio was already running', detail: 'This is its window; the command-line options were not applied.' });
   });
 
   app.whenReady().then(async () => {
     Menu.setApplicationMenu(null);
+    const dataDir = app.getPath('userData');
+    try {
+      fs.mkdirSync(dataDir, { recursive: true });
+      log = fs.createWriteStream(path.join(dataDir, 'backend.log')); // (this launch's; the one before is gone)
+      log.on('error', () => (log = null));
+    } catch {
+      log = null;
+    }
     // No permissions except writing the clipboard ("Copy path").
     const allow = (perm) => perm === 'clipboard-sanitized-write';
     session.defaultSession.setPermissionRequestHandler((_wc, perm, cb) => cb(allow(perm)));
@@ -203,9 +230,30 @@ if (!app.requestSingleInstanceLock()) {
     }
     token = b.token;
     const pageOrigin = process.env.WSDR_DEV_URL ? new URL(process.env.WSDR_DEV_URL).origin : origin;
+    const ours = (e) => e.senderFrame && new URL(e.senderFrame.url).origin === pageOrigin;
     ipcMain.handle('wsdr:session', (e) => {
-      if (!e.senderFrame || new URL(e.senderFrame.url).origin !== pageOrigin) throw new Error('not allowed');
+      if (!ours(e)) throw new Error('not allowed');
       return { token };
+    });
+    // the page's preferences (one JSON text; read once at load, so synchronous)
+    const prefsFile = path.join(dataDir, 'prefs.json');
+    ipcMain.on('wsdr:prefs-load', (e) => {
+      let s = null;
+      try {
+        if (ours(e)) s = fs.readFileSync(prefsFile, 'utf8');
+      } catch {
+        s = null;
+      }
+      e.returnValue = s;
+    });
+    ipcMain.on('wsdr:prefs-save', (e, s) => {
+      if (!ours(e) || typeof s !== 'string' || s.length > 65536) return;
+      try {
+        fs.writeFileSync(`${prefsFile}.tmp`, s);
+        fs.renameSync(`${prefsFile}.tmp`, prefsFile);
+      } catch (err) {
+        logWrite(`wsdr-studio: cannot save ${prefsFile}: ${err.message}\n`);
+      }
     });
     if (process.env.WSDR_DEV_URL) origin = pageOrigin; // navigation lock follows the page
     createWindow();
