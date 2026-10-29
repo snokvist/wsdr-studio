@@ -26,6 +26,9 @@ add_library(studio_core STATIC src/dsp.cpp src/protocol.cpp src/device_scan.cpp 
 target_include_directories(studio_core PUBLIC src)
 target_link_libraries(studio_core PUBLIC wsdrcore iqdsp PkgConfig::FFTW3F nlohmann_json::nlohmann_json Threads::Threads)
 target_compile_options(studio_core PRIVATE -Wall -Wextra)
+# The finder's complex arithmetic without Annex G: no NaN/Inf recovery (nothing there relies on it),
+# so a complex product is four multiplies instead of a library call per sample (GCC 11 made every one).
+set_source_files_properties(src/wifi.cpp src/signals.cpp PROPERTIES COMPILE_OPTIONS -fcx-limited-range)
 
 add_executable(wsdr-studiod src/main.cpp src/server.cpp)
 target_link_libraries(wsdr-studiod studio_core Boost::headers)
