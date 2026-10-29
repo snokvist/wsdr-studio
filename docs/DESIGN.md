@@ -14,6 +14,7 @@ plugin paths, no manual driver juggling: install, plug in, open the app.
 |---|---|
 | 8812BU (RTL8822B) streamer | 2.5–40 MS/s continuous on USB 3 (good host port), 40 MHz band at 40 MS/s; 2.5/5 MS/s on USB 2 |
 | 8812CU (RTL8822C) streamer | 2.5/5 MS/s on USB 2, two coherent antennas (B leads A by ~400 ns) |
+| 8812EU (RTL8822E) | the 8822C path unchanged; 5 GHz only (no 2.4 GHz front end) |
 | Fixed gain / AGC | both chips (IGI pin with CCA off; ~0.95 / ~1.0 dB per step) |
 | Retune | ~150 ms, 5 MHz grid + digital fine shift |
 | Integrity checks | framing, sequence, deadline, staleness on every bank |

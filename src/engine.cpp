@@ -211,8 +211,16 @@ json Engine::run(const json &c) {
       std::lock_guard<std::mutex> l(_sm);
       s = _view;
     }
-    if (c.contains("freq"))
+    if (c.contains("freq")) {
       s.freq = num(c, "freq", 2.3e9, 6.2e9);
+      bool five;
+      {
+        std::lock_guard<std::mutex> l(_sm);
+        five = _five_ghz_only;
+      }
+      if (five && s.freq < 3.7e9)
+        throw CmdError("bad_request", "this adapter receives 5 GHz only");
+    }
     if (c.contains("rate_sel"))
       s.rate_sel = integer(c, "rate_sel", 0, 5); // 0: 80 MS/s, gapped only (the Receiver clamps to its caps)
     // a gapped span only when asked for: a span change without it is a continuous one (the widest the
@@ -365,15 +373,15 @@ void Engine::stop_recording(const std::string &why) {
 }
 
 void Engine::open_adapter(uint16_t pid, const json &c) {
-  if (pid != wsdr::kPid8812bu && pid != wsdr::kPid8812cu)
-    throw CmdError("bad_request", "pid must be 0xb812 or 0xc812");
+  if (pid != wsdr::kPid8812bu && !wsdr::jaguar3_pid(pid))
+    throw CmdError("bad_request", "pid must be 0xb812, 0xc812 or 0xa81a");
   if (rx()) { // a second open (another window, a script): tell clients the old session is gone
     close_adapter("the view was started again (another window?)");
     _cb.event(caps());
   }
   wsdr::RxSettings s;
   s.freq = c.contains("freq") ? num(c, "freq", 2.3e9, 6.2e9) : 5180e6;
-  s.rate_sel = c.contains("rate_sel") ? integer(c, "rate_sel", 0, 5) : (pid == wsdr::kPid8812cu ? 4 : 2);
+  s.rate_sel = c.contains("rate_sel") ? integer(c, "rate_sel", 0, 5) : (wsdr::jaguar3_pid(pid) ? 4 : 2);
   int bus = c.contains("bus") ? integer(c, "bus", 0, 255) : -1;
   std::string port;
   if (c.contains("port")) {
@@ -416,6 +424,8 @@ void Engine::open_adapter(uint16_t pid, const json &c) {
     throw CmdError("busy", "every adapter of this kind is open in the other view");
   if (bus < 0)
     fail("not_found", "no such adapter is plugged in");
+  if (dev.five_ghz_only && s.freq < 3.7e9) // (nothing claimed yet; the UI offers 5 GHz only for it)
+    throw CmdError("bad_request", dev.model + " receives 5 GHz only");
   if (!_claims->take(key(bus, port), _slot))
     throw CmdError("busy", "this adapter is open in the other view");
   {
@@ -478,7 +488,8 @@ void Engine::open_adapter(uint16_t pid, const json &c) {
   auto r = std::make_shared<wsdr::Receiver>(std::make_shared<Logger>());
   {
     std::lock_guard<std::mutex> l(_sm);
-    _cu = pid == wsdr::kPid8812cu;
+    _cu = wsdr::jaguar3_pid(pid);
+    _five_ghz_only = dev.five_ghz_only;
   }
   if (!_claims->take(key(bus, port), _slot)) // its bus may have changed (USB 3 switch)
     fail("busy", "this adapter is open in the other view");
@@ -503,7 +514,7 @@ void Engine::open_adapter(uint16_t pid, const json &c) {
   {
     std::lock_guard<std::mutex> l(_sm);
     _caps = r->caps();
-    _adapter = (_caps.cu ? std::string("RTL8812CU (") : std::string("RTL8812BU (")) + _caps.chip + ")";
+    _adapter = dev.model + " (" + _caps.chip + ")";
     _open_bus = bus;
     _open_port = port;
     _state = "open";
@@ -681,7 +692,8 @@ json Engine::devices_json(const std::vector<DeviceInfo> &d) {
   for (const auto &x : d)
     arr.push_back({{"pid", x.pid}, {"model", x.model}, {"chip", x.chip}, {"bus", x.bus}, {"port", x.port},
                    {"speed_mbps", x.speed_mbps}, {"controller", x.controller}, {"driver", x.driver},
-                   {"can_open", x.can_open}, {"max_msps", x.max_msps}, {"gapped_msps", x.gapped_msps}});
+                   {"can_open", x.can_open}, {"max_msps", x.max_msps}, {"gapped_msps", x.gapped_msps},
+                   {"bands", x.five_ghz_only ? json::array({"5"}) : json::array({"2.4", "5"})}});
   return {{"type", "devices"}, {"devices", arr}};
 }
 

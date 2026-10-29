@@ -11,7 +11,7 @@ import type { Caps, Device, DspSettings, FramePoints, Rate, RxSettings, Row, Sta
 import { Seg } from './ui';
 import {
   ANT_COLOUR, LOCKED, SLOT_NAME, UDEV_CMD, isDual, VIEW_COLOUR, bandOf, baseName, bytes, chanShort, contMsps, devKey, devLabel, devTitle, fmtClock,
-  fmtDur, gappedDuty, loadPrefs, mhz, ratesFor, snap, spanLabel, type Mode, type Prefs, type Scale, type Tuning,
+  fmtDur, gappedDuty, hears, jaguar3, loadPrefs, mhz, ratesFor, snap, spanLabel, type Mode, type Prefs, type Scale, type Tuning,
 } from './util';
 
 type Banner = { id: number; text: string; kind: 'info' | 'error' };
@@ -436,7 +436,7 @@ export function Station(p: {
               : 'Stopped. Press ▶ Start to begin.';
   const marker = open || hadPicture ? cur.freq : null;
   const markerLabel = open ? 'requested' : 'next Start';
-  const chipNotch = chip.includes('8822C');
+  const chipNotch = jaguar3(chip); // 8822C and 8822E notch their centre in the gapped wide spans
   // the 8822B dips at its centre at 40 MHz on 2.4 GHz (measured: ~8-10 dB over +-1 MHz)
   const notchWide = open && (caps.chip ?? '').includes('8822B') && hwFs >= 40e6 && tuned > 0 && tuned < 3.7e9;
   useEffect(
@@ -492,6 +492,12 @@ export function Station(p: {
   // A change the user made here: offered to the other view (it takes the linked fields; first, while
   // this view's frequency is still the old one, so the distance is kept), then applied.
   const userSet = (args: Partial<RxSettings>) => {
+    if (args.freq !== undefined && !hears(sel, args.freq)) { // the 8812EU: no 2.4 GHz front end
+      addBanner(`${sel?.model ?? 'This adapter'} receives 5 GHz only`);
+      setFreqText(mhz(cur.freq, 3)); // the field shows where the radio is, not the refused value
+      lastSentFreq.current = null;
+      return;
+    }
     link.userSet(slot, args);
     set(args);
   };
@@ -577,9 +583,12 @@ export function Station(p: {
     setSaved(null);
     window.clearTimeout(gainTimer.current); // a gain change still waiting goes with the open
     const gain = gainUi ?? draft.gain_db;
+    // an adapter without a 2.4 GHz front end (8812EU) starts on 5 GHz channel 36 instead of a 2.4 GHz draft
+    const band = hears(dev, extra.freq ?? draft.freq) ? {} : { freq: 5180e6 };
+    if (band.freq) addBanner(`${dev.model} receives 5 GHz only: starting on channel 36`);
     try {
       await req('open', {
-        pid: dev.pid, bus: dev.bus, port: dev.port, ...draft, ...extra, gain_db: gain, offset_tuning: prefs.offsetTuning, ...(auto ? { allow_gapped: false } : {}),
+        pid: dev.pid, bus: dev.bus, port: dev.port, ...draft, ...extra, ...band, gain_db: gain, offset_tuning: prefs.offsetTuning, ...(auto ? { allow_gapped: false } : {}),
       });
     } catch {
       /* shown */
@@ -785,7 +794,7 @@ export function Station(p: {
               requested frequency is marked on the plot.
             </span>
           )}
-          {chip.includes('8822C') &&
+          {jaguar3(chip) &&
             toggle(
               'Avoid the chip’s centre notch',
               prefs.offsetTuning ? 'tunes beside the channel' : 'shows what the chip sees',
@@ -995,7 +1004,7 @@ export function Station(p: {
               <line x1="10" y1="21" x2="14" y2="21" />
             </svg>
             <h2>No adapter found</h2>
-            <p>Plug in an RTL8812BU or RTL8812CU. It appears here by itself; Rescan looks again now.</p>
+            <p>Plug in an RTL8812BU, RTL8812CU or RTL8812EU. It appears here by itself; Rescan looks again now.</p>
             <button onClick={() => req('scan').catch(() => {})}>⟳ Rescan</button>
           </div>
         ) : sel && !sel.can_open ? (

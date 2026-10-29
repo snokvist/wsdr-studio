@@ -195,8 +195,8 @@ json open_cmd(const Args &a) {
   // 8812CU's gapped spans are chosen in the app, where they are labelled).
   c["allow_gapped"] = false;
   c["usb3"] = a.usb3;
-  if (a.pid == wsdr::kPid8812cu && a.rate_msps > 5)
-    std::fprintf(stderr, "wsdr-studiod: the 8812CU streams up to 5 MS/s; wider spans (gapped) are in Span / rate\n");
+  if (wsdr::jaguar3_pid(a.pid) && a.rate_msps > 5)
+    std::fprintf(stderr, "wsdr-studiod: the 8812CU / 8812EU stream up to 5 MS/s; wider spans (gapped) are in Span / rate\n");
   return c;
 }
 
@@ -250,7 +250,7 @@ int run_headless(const Args &a) {
 int main(int argc, char **argv) {
   Args a;
   if (!parse(argc, argv, a)) {
-    std::fprintf(stderr, "usage: wsdr-studiod [--ui-pipe] [--port N] [--web DIR] [--pid 0xb812|0xc812] [--freq HZ] "
+    std::fprintf(stderr, "usage: wsdr-studiod [--ui-pipe] [--port N] [--web DIR] [--pid 0xb812|0xc812|0xa81a] [--freq HZ] "
                          "[--rate MSPS] [--record-dir DIR] [--no-usb3] | --headless-seconds N --pid ...\n");
     return 2;
   }

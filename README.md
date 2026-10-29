@@ -1,6 +1,6 @@
 # wsdr-studio
 
-A desktop app that turns a Realtek RTL8812BU (or RTL8812CU) USB Wi-Fi dongle into a live spectrum
+A desktop app that turns a Realtek RTL8812BU (or RTL8812CU / RTL8812EU) USB Wi-Fi dongle into a live spectrum
 receiver: plug it in, press Start, pick a Wi-Fi channel, watch the spectrum and waterfall. With two
 dongles it shows two views side by side on one axis (Panorama) or stacked on the same channel
 (Compare), and one dongle can sweep a whole band into a heatmap (Spectral Map).
@@ -14,9 +14,10 @@ dongles it shows two views side by side on one axis (Panorama) or stacked on the
     gapped: one 8192-sample slice at 80 MS/s (~77 MHz at −6 dB), ~0.2 ms to ship it, ~33 % of the time
     sampled (an 8812BU left at USB 2 offers it too, ~6 %). The chip's 80 MHz filter has a ~±2.5 dB
     ripple across the band.
-  - 8812BU on USB 2, or the 8812CU: 2.5 and 5 MHz continuous (the 8812BU is normally switched to USB 3
-    at Start, see below).
-  - 8812CU (and an 8812BU left at USB 2), gapped: 10, 20 and 40 MHz spans listed as "gapped" in the Span list. The dongle captures
+  - 8812BU on USB 2, or the 8812CU / 8812EU: 2.5 and 5 MHz continuous (the 8812BU is normally switched to USB 3
+    at Start, see below). The 8812EU is 5 GHz only (its board has no 2.4 GHz front end), so the app
+    offers it 5 GHz channels only.
+  - 8812CU / 8812EU (and an 8812BU left at USB 2), gapped: 10, 20 and 40 MHz spans listed as "gapped" in the Span list. The dongle captures
     one 8192-sample slice, ships it over USB 2 (~1.5 ms), and repeats: 35 / 21 / 12 % of the time is
     sampled. Good for watching a band; short bursts can fall in the gaps, and recording needs a
     continuous span. Gapped spans are only used when picked.
@@ -58,6 +59,7 @@ shaded slot at A's centre is the 8812CU's own notch.
    sudo tee /etc/udev/rules.d/70-wsdr.rules > /dev/null <<'RULES'
    SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="b812", TAG+="uaccess", MODE="0660", GROUP="plugdev"
    SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="c812", TAG+="uaccess", MODE="0660", GROUP="plugdev"
+   SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="a81a", TAG+="uaccess", MODE="0660", GROUP="plugdev"
    RULES
    sudo rm -f /etc/udev/rules.d/99-wsdr.rules   # (the rule's old name, if an earlier setup left it)
    sudo udevadm control --reload
@@ -95,7 +97,7 @@ new windows and permissions are locked down), so no outside web content is ever 
   it before `73-seat-late.rules`, where `uaccess` is applied, so the logged-in user gets access on
   every distribution, `plugdev` or not). Without it the app shows a "cannot open it" card with the
   command to run and a Copy button.
-- **Kernel drivers:** the in-kernel drivers (rtw88_8822bu/cu) claim the dongle on plug-in; Start
+- **Kernel drivers:** the in-kernel drivers (rtw88_8822bu/cu; for the 8812EU the out-of-tree rtl88x2eu) claim the dongle on plug-in; Start
   takes it over. The blacklist in the quick start (or wifi-sdr's `tools/rtw88_guard.sh on`) keeps
   them away for good.
 - **USB 3 on the 8812BU:** this dongle enumerates at USB 2 after a plain replug. Start switches it to
@@ -178,7 +180,7 @@ The window needs at least 1280 × 720.
 
 - **"cannot open it" / no permission:** the udev rule is missing, or the dongle was not replugged
   after adding it.
-- **No adapter listed:** check `lsusb` for `0bda:b812` (8812BU) or `0bda:c812` (8812CU); the app
+- **No adapter listed:** check `lsusb` for `0bda:b812` (8812BU), `0bda:c812` (8812CU) or `0bda:a81a` (8812EU); the app
   looks again every few seconds.
 - **The 8812BU stays at USB 2** ("The 8812BU stayed at USB 2: this port or cable may not carry USB 3";
   only 2.5 and 5 MHz continuous): use a USB 3 port and cable (SuperSpeed, often blue), then replug.

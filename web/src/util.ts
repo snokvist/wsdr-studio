@@ -15,7 +15,7 @@ export const ratesFor = (d: Device | undefined, offsetTuning: boolean): Rate[] =
     ? RATES.filter((r) => r.fs <= contMsps(d) * 1e6 || r.fs <= (d.gapped_msps ?? 0) * 1e6).map((r) => {
         const gapped = r.fs > contMsps(d) * 1e6;
         // as the backend: with offset tuning the 8812CU's 10/20 MHz gapped views come from a 40 MHz capture
-        return { ...r, gapped, hw_fs: gapped && offsetTuning && d.chip.includes('8822C') && r.fs <= 20e6 ? 40e6 : r.fs };
+        return { ...r, gapped, hw_fs: gapped && offsetTuning && jaguar3(d.chip) && r.fs <= 20e6 ? 40e6 : r.fs };
       })
     : RATES;
 // Share of the time a gapped span samples: one 8192-sample bank, then shipping it: ~1.48 ms over USB 2,
@@ -43,9 +43,14 @@ export const snap = (f: number) => {
   return Math.min(6165e6, Math.max(5080e6, Math.round(f / 5e6) * 5e6));
 };
 export const bandOf = (f: number): '2.4' | '5' => (f < 3.7e9 ? '2.4' : '5');
+// The 8822C and 8822E: the same receive path (gapped wide spans, a centre notch in them)
+export const jaguar3 = (chip: string) => /8822[CE]/.test(chip);
+// The bands an adapter's front end receives (the 8812EU has no 2.4 GHz one); no adapter: both
+export const bandsOf = (d: Device | undefined): ('2.4' | '5')[] => d?.bands ?? ['2.4', '5'];
+export const hears = (d: Device | undefined, f: number) => bandsOf(d).includes(bandOf(f));
 // The udev rule (the same as the README's): self-contained, so it works from the AppImage. Its number
 // sorts before 73-seat-late.rules, where uaccess is applied (a later rule never gets it).
-export const UDEV_RULES = [0xb812, 0xc812]
+export const UDEV_RULES = [0xb812, 0xc812, 0xa81a]
   .map((pid) => `SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="${pid.toString(16)}", TAG+="uaccess", MODE="0660", GROUP="plugdev"`)
   .join('\n');
 export const UDEV_CMD = `printf '%s\\n' '${UDEV_RULES.split('\n').join("' '")}' | sudo tee /etc/udev/rules.d/70-wsdr.rules > /dev/null && sudo udevadm control --reload`;

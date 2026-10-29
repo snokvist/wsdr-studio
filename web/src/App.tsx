@@ -15,7 +15,7 @@ import { SpectralMap } from './SpectralMap';
 import { survey, type Survey } from './survey';
 import { NumField, Seg } from './ui';
 import {
-  FFTS, LOCKED, SLOT_NAME, bandOf, baseName, bytes, contMsps, devKey, gappedDuty, isDual, loadPrefs, savePrefs, snap, spanLabel, type Locks, type Mode, type Prefs, type Scale,
+  FFTS, LOCKED, SLOT_NAME, bandOf, bandsOf, baseName, bytes, contMsps, devKey, gappedDuty, isDual, loadPrefs, savePrefs, snap, spanLabel, type Locks, type Mode, type Prefs, type Scale,
 } from './util';
 
 // [keys, what, the modes it acts in]
@@ -274,7 +274,8 @@ export default function App() {
     // Panorama: B's span starts where A's ends (each half of its own span from its centre)
     // (from where the radio centres A: at 40 MHz on 2.4 GHz that may not be the asked frequency)
     const want = (mode === 'panorama' ? va.centre : va.freq) + (mode === 'panorama' ? (va.fsNow + (sameSpan ? va.fsNow : b.fs())) / 2 : 0);
-    if (Math.abs(snap(want) - want) <= 2.5e6 && bandOf(want) === bandOf(va.freq)) args.freq = snap(want);
+    // (and in B's own band: an 8812EU in B cannot follow A to 2.4 GHz)
+    if (Math.abs(snap(want) - want) <= 2.5e6 && bandOf(want) === bandOf(va.freq) && bandOf(want) === bandOf(b.freq())) args.freq = snap(want);
     else a.notice(`View B stays: ${(want / 1e6).toFixed(0)} MHz is outside the band`);
     if (Object.keys(args).length) b.linkedSet(args);
   }, [mode, views]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -412,7 +413,10 @@ export default function App() {
 
   // Map: the sweeping view's adapter; Start opens it (when stopped) and sweeps, Stop ends both
   const mapDev = inMap ? devices.find((d) => devKey(d) === views[mapSlot]?.selKey) : undefined;
-  const mapPlan = inMap ? sweepPlan(prefs.mapRange, mapDev, prefs.mapGapped) : null;
+  // a remembered 2.4 GHz sweep on an adapter without that band (8812EU): all of 5 GHz instead
+  const mapRange: Range = prefs.mapRange === '2.4' && !bandsOf(mapDev).includes('2.4') ? '5' : prefs.mapRange;
+  const mapPlan = inMap ? sweepPlan(mapRange, mapDev, prefs.mapGapped) : null;
+  const selDev = devices.find((d) => devKey(d) === views[sel]?.selKey); // the band ruler's bands
   // Start opens the adapter on the sweep's first step (not on a draft of an earlier sweep), after a
   // Stop's close if one is still in flight; Stop closes it, opening or open.
   const mapStart = () => {
@@ -619,8 +623,8 @@ export default function App() {
                 <section className="sbgroup" aria-label="Sweep">
                   <h3>Sweep</h3>
                   <div className="rbands" role="group" aria-label="Channels swept">
-                    {(['2.4', '5', 'u12', 'u2e', 'u3'] as Range[]).map((r) => (
-                      <button key={r} className={r === prefs.mapRange ? 'on' : ''} aria-pressed={r === prefs.mapRange} onClick={() => updatePrefs({ mapRange: r })} title={RANGES[r].title}>
+                    {(['2.4', '5', 'u12', 'u2e', 'u3'] as Range[]).filter((r) => r !== '2.4' || bandsOf(mapDev).includes('2.4')).map((r) => (
+                      <button key={r} className={r === mapRange ? 'on' : ''} aria-pressed={r === mapRange} onClick={() => updatePrefs({ mapRange: r })} title={RANGES[r].title}>
                         {RANGES[r].label}
                       </button>
                     ))}
@@ -786,7 +790,8 @@ export default function App() {
                     v && (i === 0 || dual) ? [{ slot: i, lo: v.centre - v.fsNow / 2, hi: v.centre + v.fsNow / 2, locked: v.locked, gapped: v.gapped }] : [],
                   )
             }
-            range={inMap ? prefs.mapRange : undefined}
+            range={inMap ? mapRange : undefined}
+            bands={bandsOf(inMap ? mapDev : selDev)}
             sel={sel}
             compact={mode === 'compare'}
             survey={surveyMap}
@@ -819,10 +824,10 @@ export default function App() {
               ))}
             {inMap && (
               <SpectralMap
-                key={`${mapSlot}:${prefs.mapRange}:${prefs.mapDwell}:${planId(mapPlan)}`}
+                key={`${mapSlot}:${mapRange}:${prefs.mapDwell}:${planId(mapPlan)}`}
                 hub={hub}
                 slot={mapSlot}
-                range={prefs.mapRange}
+                range={mapRange}
                 dev={mapDev}
                 open={!!views[mapSlot]?.open}
                 opening={!!views[mapSlot]?.locked && !views[mapSlot]?.open}

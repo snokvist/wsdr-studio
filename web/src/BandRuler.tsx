@@ -24,6 +24,7 @@ export function BandRuler(p: {
   nets: Map<number, string[]>; // network names heard on each channel (from beacons)
   onTune: (f: number) => void; onStep: (steps: number) => void; onSelect: (slot: number) => void;
   range?: Range; // Map: the range swept (its buttons are in the sidebar; the cells line up with the map)
+  bands?: ('2.4' | '5')[]; // what the selected view's adapter receives (the 8812EU: 5 GHz only); missing = both
 }) {
   const wheel = useRef({ px: 0, t: 0 });
   const track = useRef<HTMLDivElement>(null);
@@ -106,7 +107,7 @@ export function BandRuler(p: {
         <div className="rgutter" />
       ) : (
         <div className="rbands" role="group" aria-label="Channels shown">
-          {(['2.4', '5', 'u12', 'u2e', 'u3'] as Range[]).map((b) => (
+          {(['2.4', '5', 'u12', 'u2e', 'u3'] as Range[]).filter((b) => b !== '2.4' || (p.bands ?? ['2.4']).includes('2.4')).map((b) => (
             <button key={b} className={b === band ? 'on' : ''} aria-pressed={b === band} onClick={() => showBand(b)} title={RANGES[b].title}>
               {RANGES[b].label}
             </button>

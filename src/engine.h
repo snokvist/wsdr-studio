@@ -179,6 +179,7 @@ private:
   std::string _state = "closed", _error, _adapter;
   wsdr::RxSettings _view; // what the user asked for (== the radio's settings unless offset-tuned)
   bool _cu = false;
+  bool _five_ghz_only = false; // the open adapter has no 2.4 GHz front end (8812EU): tune requests below 3.7 GHz are refused
   int _open_bus = -1;     // the open device (caps: which adapter is open)
   std::string _open_port;
   wsdr::RxCaps _caps;
