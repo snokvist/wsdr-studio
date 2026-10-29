@@ -429,7 +429,7 @@ export function SpectralMap(p: {
             {hover.text}
           </div>
         )}
-        {!p.dev && <div className="vcard">No adapter for the map. Plug in an RTL8812BU or RTL8812CU.</div>}
+        {!p.dev && <div className="vcard">No adapter for the map. Plug in an RTL8812BU, RTL8812CU or RTL8812EU.</div>}
         {p.dev && !p.running && !info.sweeps && (
           <div className="vcard">
             <h2>Map the {RANGES[p.range].label === '2.4 GHz' ? '2.4 GHz band' : `5 GHz ${p.range === '5' ? 'band' : `channels ${RANGES[p.range].label}`}`}</h2>

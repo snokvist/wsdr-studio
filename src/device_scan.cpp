@@ -33,13 +33,16 @@ std::vector<DeviceInfo> scan_devices() {
   for (ssize_t i = 0; i < n; i++) {
     libusb_device_descriptor d{};
     if (libusb_get_device_descriptor(list[i], &d) != 0 || d.idVendor != 0x0bda ||
-        (d.idProduct != wsdr::kPid8812bu && d.idProduct != wsdr::kPid8812cu))
+        (d.idProduct != wsdr::kPid8812bu && !wsdr::jaguar3_pid(d.idProduct)))
       continue;
     DeviceInfo info;
     info.pid = d.idProduct;
-    const bool cu = d.idProduct == wsdr::kPid8812cu;
-    info.model = cu ? "RTL8812CU" : "RTL8812BU";
-    info.chip = cu ? "RTL8822C" : "RTL8822B";
+    // Jaguar3 (8812CU, 8812EU): USB 2, 5 MS/s continuous, 40 MS/s gapped, the 8822C code throughout
+    const bool cu = wsdr::jaguar3_pid(d.idProduct);
+    const bool eu = d.idProduct == wsdr::kPid8812eu;
+    info.model = eu ? "RTL8812EU" : cu ? "RTL8812CU" : "RTL8812BU";
+    info.chip = eu ? "RTL8822E" : cu ? "RTL8822C" : "RTL8822B";
+    info.five_ghz_only = eu; // measured: at 2.4 GHz it streams the ADC floor (wifi-sdr notes/cu-custom-code.md)
     info.bus = libusb_get_bus_number(list[i]);
     uint8_t ports[8];
     const int np = libusb_get_port_numbers(list[i], ports, sizeof ports);
@@ -66,7 +69,7 @@ std::vector<DeviceInfo> scan_devices() {
     std::snprintf(node, sizeof node, "/dev/bus/usb/%03d/%03d", info.bus, libusb_get_device_address(list[i]));
     info.can_open = access(node, R_OK | W_OK) == 0;
     info.max_msps = !cu && info.speed_mbps >= 5000 ? 40 : 5;
-    // gapped spans wider than the link carries: up to 40 MS/s on the 8812CU, 80 MS/s on an 8812BU on
+    // gapped spans wider than the link carries: up to 40 MS/s on the 8812CU / 8812EU, 80 MS/s on an 8812BU on
     // either link (wifi-sdr evidence/gapped-80msps.txt)
     info.gapped_msps = cu ? 40 : 80;
     out.push_back(info);

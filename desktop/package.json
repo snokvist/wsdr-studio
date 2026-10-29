@@ -4,7 +4,7 @@
   "desktopName": "wsdr-studio.desktop",
   "version": "0.2.5",
   "private": true,
-  "description": "Live spectrum from RTL8812BU/8812CU dongles (Electron shell around wsdr-studiod)",
+  "description": "Live spectrum from RTL8812BU/8812CU/8812EU dongles (Electron shell around wsdr-studiod)",
   "license": "GPL-2.0-only",
   "main": "main.js",
   "scripts": {

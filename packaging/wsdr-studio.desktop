@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=wsdr-studio
-Comment=Live Wi-Fi spectrum from an RTL8812BU/8812CU USB dongle
+Comment=Live Wi-Fi spectrum from an RTL8812BU/8812CU/8812EU USB dongle
 Exec=wsdr-studiod
 Icon=wsdr-studio
 Terminal=false
