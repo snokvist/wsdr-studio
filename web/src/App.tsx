@@ -274,7 +274,8 @@ export default function App() {
     // Panorama: B's span starts where A's ends (each half of its own span from its centre)
     // (from where the radio centres A: at 40 MHz on 2.4 GHz that may not be the asked frequency)
     const want = (mode === 'panorama' ? va.centre : va.freq) + (mode === 'panorama' ? (va.fsNow + (sameSpan ? va.fsNow : b.fs())) / 2 : 0);
-    if (Math.abs(snap(want) - want) <= 2.5e6 && bandOf(want) === bandOf(va.freq)) args.freq = snap(want);
+    // (and in B's own band: an 8812EU in B cannot follow A to 2.4 GHz)
+    if (Math.abs(snap(want) - want) <= 2.5e6 && bandOf(want) === bandOf(va.freq) && bandOf(want) === bandOf(b.freq())) args.freq = snap(want);
     else a.notice(`View B stays: ${(want / 1e6).toFixed(0)} MHz is outside the band`);
     if (Object.keys(args).length) b.linkedSet(args);
   }, [mode, views]); // eslint-disable-line react-hooks/exhaustive-deps

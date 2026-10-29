@@ -494,6 +494,8 @@ export function Station(p: {
   const userSet = (args: Partial<RxSettings>) => {
     if (args.freq !== undefined && !hears(sel, args.freq)) { // the 8812EU: no 2.4 GHz front end
       addBanner(`${sel?.model ?? 'This adapter'} receives 5 GHz only`);
+      setFreqText(mhz(cur.freq, 3)); // the field shows where the radio is, not the refused value
+      lastSentFreq.current = null;
       return;
     }
     link.userSet(slot, args);
