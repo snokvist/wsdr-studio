@@ -129,7 +129,15 @@ def make(a):
     s = STD[a.std]
     frames = Frames(a.video, s)
     fs_out = a.rate * 1e6
-    mean = composite(np.arange(0, s['lines'] / s['fh'], 1 / 2e6), s, frames).mean()  # (the PLL holds the mean)
+    # the composite's mean over the whole file (the transmitter's PLL holds the mean frequency on the
+    # channel: then so does this file's), read at 1 MS/s; the frames are read again for the samples
+    acc, cnt = 0.0, 0
+    for t0 in np.arange(0, a.seconds, 0.25):
+        t = np.arange(t0, min(t0 + 0.25, a.seconds), 1e-6)
+        acc, cnt = acc + composite(t, s, frames).sum(), cnt + len(t)
+    mean = acc / cnt
+    frames.close()
+    frames = Frames(a.video, s)
     vlp = lowpass(s['video_bw'], FS, 81)
     rlp = lowpass(9.2e6, FS, 63) if a.rate == 20 else None  # the adapter's ~18.4 MHz at 20 MS/s
     dev = a.dev * 1e6 / (s['white'] - s['sync'])  # Hz per volt
@@ -194,23 +202,28 @@ def check(a):
     n = int(min(a.seconds, meta['global'].get('wsdr:samples', 1e12) / fs) * fs)
     raw = np.fromfile(base + '.sigmf-data', np.int16, 2 * n).astype(np.float32) / 16
     x = raw[0::2] + 1j * raw[1::2]
-    d = np.angle(x[1:] * np.conj(x[:-1])) * fs / (2 * np.pi)  # Hz
-    luma = fconv(d, lowpass(2.5e6, fs, int(8 * fs / 1e6) | 1))  # (under the colour subcarrier)
-    sync = fconv(d, lowpass(1.0e6, fs, int(2 * fs / 1e6) | 1))
-    # the polarity whose plateaus repeat at a line period: sync tips; then the standard from that period
+    x = x - x.mean()  # (the adapter's own DC)
+    # demodulated as it is, and mixed to its power-weighted mean frequency first (an off-centre
+    # transmitter wraps otherwise; one whose sync is at the filter's edge can do better without)
+    f0 = np.angle(np.sum(x[1:] * np.conj(x[:-1])))
     best = None
-    for sgn in (1, -1):
-        w = sgn * sync
-        tip, med = np.quantile(w, 0.02), np.median(w)
-        st, en = pulses(w, tip + 0.2 * (med - tip), fs, 3.5e-6, 6.5e-6)
-        dd = np.diff((st + en) / 2) / fs
-        line = np.median(dd[(dd > 60e-6) & (dd < 68e-6)]) if ((dd > 60e-6) & (dd < 68e-6)).sum() > 10 else 0
-        good = ((dd > 60e-6) & (dd < 68e-6)).sum()
-        if line and (best is None or good > best[0]):
-            best = (good, sgn, line, tip + 0.2 * (med - tip))
+    for mix in (0.0, f0):
+        y = x * np.exp(-1j * mix * np.arange(len(x))) if mix else x
+        d = np.angle(y[1:] * np.conj(y[:-1])) * fs / (2 * np.pi)  # Hz
+        sync = fconv(d, lowpass(1.0e6, fs, int(2 * fs / 1e6) | 1))
+        # the polarity whose plateaus repeat at a line period: sync tips; then the standard from that period
+        for sgn in (1, -1):
+            w = sgn * sync
+            tip, med = np.quantile(w, 0.02), np.median(w)
+            st, en = pulses(w, tip + 0.2 * (med - tip), fs, 3.5e-6, 6.5e-6)
+            dd = np.diff((st + en) / 2) / fs
+            good = ((dd > 60e-6) & (dd < 68e-6)).sum()
+            if good > 10 and (best is None or good > best[0]):
+                best = (good, sgn, np.median(dd[(dd > 60e-6) & (dd < 68e-6)]), tip + 0.2 * (med - tip), d, sync)
     if best is None:
         sys.exit('check: no line sync found')
-    _, sgn, line, th = best
+    _, sgn, line, th, d, sync = best
+    luma = fconv(d, lowpass(2.5e6, fs, int(8 * fs / 1e6) | 1))  # (under the colour subcarrier)
     std = 'pal' if abs(line - 64e-6) < abs(line - 1 / STD['ntsc']['fh']) else 'ntsc'
     s = STD[std]
     w, wl = sgn * sync, sgn * luma

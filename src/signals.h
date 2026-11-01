@@ -5,7 +5,8 @@
 // is decoded (its device address and name). A narrow line that stays (a steady carrier) is reported
 // with the spacing of the comb around it, if any (a video line rate: a display clock's harmonic). An
 // analog video signal (FM, as an analog FPV drone camera or a video sender transmits it) is found by its
-// line sync after FM demodulation, with its line rate (PAL/SECAM or NTSC). Receive only.
+// line sync after FM demodulation, with its line rate (PAL/SECAM or NTSC); narrow bursts and steady
+// carriers inside its band are its own. Receive only.
 #pragma once
 
 #include <complex>
@@ -26,7 +27,8 @@ struct Burst {
   double dur_us = 0;
   // 'T' Bluetooth (narrow bursts hopping), 'N' other narrowband, 'M' microwave oven, 'E' BLE advertising
   // (decoded: CRC good), 'C' a steady carrier (every 200 ms while it lasts), 'A' analog video, FM
-  // (every 200 ms while it lasts; mhz: its mean frequency, bw_mhz: its swing, sync tip to peak)
+  // (each signal once per 200 ms window while it lasts; t, dur_us: the stretch looked at; mhz: its mean
+  // frequency; bw_mhz: its deviation, sync tip to white)
   char kind = 'N';
   double comb_khz = 0; // 'C': the spacing of evenly spaced lines around it (0: none)
   double line_khz = 0; // 'A': its line rate (15.625 kHz: 625 lines, PAL/SECAM; 15.734: 525, NTSC)
@@ -74,11 +76,35 @@ private:
   std::vector<std::pair<double, double>> _decoded; // decoded packets' times (s): a burst over one is it
   void oven(std::vector<Burst> &out); // every 200 ms
   void carriers(std::vector<Burst> &out); // every 200 ms
-  void video(std::vector<Burst> &out);    // every 200 ms (before carriers(): parts of it are no carrier)
-  bool in_video(double t, double hz) const { return t < _vid_until && hz > _vid_lo && hz < _vid_hi; }
-  double _vid_lo = 0, _vid_hi = 0;   // the band of the last video signal found (Hz) ...
-  double _vid_until = 0;             // ... until then (s): narrow bursts and carriers in it are its own
-  double _vid_hz = 0;                // its mean frequency, averaged over the windows it was found in
+  // Analog video: looked for as the warm-up ends, then once per 200 ms window at a pseudo-random point
+  // (so that the stretches looked at fall on all parts of the picture, not one band of it)
+  void video(std::vector<Burst> &out);
+  struct VideoHit {
+    double hz = 0;                   // its mean frequency (Hz from the centre)
+    double band = 0;                 // the sub-band's centre it was found in (Hz from the centre)
+    float sgn = 1, tip = 0, blank = 0; // where its sync is (sgn: 1 the low end, -1 the high end), Hz from hz
+    double line = 0;                 // line period (s)
+    size_t pulses = 0;
+  };
+  // one sub-band's samples (complex, fs): a video signal in it, if any (hz relative to its own centre)
+  // (prefer: the end its sync is at when a signal there is already followed, else 0)
+  bool video_in(const std::vector<cf> &y, double fs, float prefer, VideoHit &h) const;
+  struct Video {
+    double hz;                       // its mean frequency (Hz, absolute), averaged over the times it was found
+    double lo, hi;                   // its band (Hz): narrow bursts and steady carriers in it are its own ...
+    double until;                    // ... until then (s; held a while: a miss does not let them through)
+    float sgn;                       // its sync's end
+  };
+  std::vector<Video> _videos;
+  bool in_video(double t, double hz) const {
+    for (const auto &v : _videos)
+      if (t < v.until && hz > v.lo && hz < v.hi)
+        return true;
+    return false;
+  }
+  uint64_t _vid_due = 0;             // the column to look in next (0: none)
+  uint32_t _vid_rng = 1;             // (a fixed sequence: tests are repeatable)
+  std::vector<float> _halfband;      // 40 MS/s -> 20 MS/s sub-bands
   double time_of(uint64_t sample) const { return _t_end - static_cast<double>(_abs_end - sample) / _fs; }
   double bin_hz(double k) const { return _centre + (k - 0.5 * _nf) * _fs / _nf; }
 

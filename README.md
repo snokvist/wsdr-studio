@@ -158,13 +158,15 @@ The window needs at least 1280 × 720.
   harmonic (an HDMI/DisplayPort cable, a monitor or a GPU nearby: they show up as a ladder of such
   lines across 5 GHz).
   Analog video sent as FM (an analog FPV drone's camera transmitter at 5.8 GHz, a 2.4 GHz video
-  sender) is found by its line sync after FM demodulation, about five times a second: the hover names
-  its standard from the line rate (PAL/SECAM 625 lines or NTSC 525), its mean frequency (≈: the
-  picture shifts it a MHz or two) with the FPV channels near it (bands A, B, E, F, R, L), and its
-  deviation (sync tip to white). It is found well before its picture would be watchable. The narrow
-  lines and bursts its carrier makes are not marked separately. The picture itself is not decoded
-  (see [docs/FPV.md](docs/FPV.md)). These are cheap rules, close enough to tag what the waterfall
-  shows; signals at the very edge of the span are missed.
+  sender) is found by its line sync after FM demodulation, about five times a second, beside Wi-Fi
+  too, and two at once when they are 20 MHz apart. The hover names its standard from the line rate
+  (PAL/SECAM 625 lines or NTSC 525), its mean frequency (≈: the picture can shift it by a MHz or so)
+  with the FPV channels near it (bands A, B, E, F, R, L), and its deviation (sync tip to white). It
+  is found down to about where its picture breaks up into sparklies. Narrow bursts and steady
+  carriers inside its band (its swing and 7 MHz either side) are not marked: its own carrier makes
+  them, and anything else there is under it. The picture itself is not decoded (see
+  [docs/FPV.md](docs/FPV.md)). These are cheap rules, close enough to tag what the waterfall shows;
+  signals at the very edge of the span are missed.
 - **Frame inspector** (click a Wi-Fi mark): that frame's equalised subcarriers as a constellation:
   L-SIG, the HT/VHT signal field, and the payload's first 32 symbols, with the EVM, the SNR and the
   sender's carrier offset (kHz, ppm; both crystals' errors), plus the sender and network when the

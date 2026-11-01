@@ -58,7 +58,20 @@ void Finder::reset(double fs, double centre_hz) {
   _ms_cols = _ms_loud = 0;
   _win_t0 = 0;
   _tfloor = 0;
-  _vid_lo = _vid_hi = _vid_until = _vid_hz = 0;
+  _videos.clear();
+  _vid_due = 0;
+  _vid_rng = 1;
+  if (_halfband.empty()) { // 31 taps (centre 15), Hamming: flat to ~+-8 MHz of a sub-band at 40 MS/s, ~50 dB down past +-12
+    for (int i = 0; i < 31; i++) {
+      const double m = i - 15;
+      _halfband.push_back(static_cast<float>((m == 0 ? 0.5 : std::sin(kPi * m / 2) / (kPi * m)) * (0.54 - 0.46 * std::cos(2 * kPi * i / 30))));
+    }
+    float sum = 0;
+    for (float t : _halfband)
+      sum += t;
+    for (float &t : _halfband)
+      t /= sum;
+  }
   if (!_nf)
     return;
   _win.resize(_nf);
@@ -194,14 +207,15 @@ void Finder::column(const cf *x, std::vector<Burst> &out) {
     _busy.push_back(static_cast<float>(_ms_loud) / kMsCols);
     _ms_cols = _ms_loud = 0;
     if (static_cast<int>(_busy.size()) == kWinMs) {
-      video(out);
       carriers(out);
       oven(out);
+      _vid_rng = _vid_rng * 1664525u + 1013904223u; // (its next look: within the next ~20 ms, a field)
+      _vid_due = _col + 1 + (_vid_rng >> 8) % 3125;
     }
   }
-  // (and once as the warm-up ends: a video signal's band is then known before any narrow burst, which
-  // parts of it would pass for, can be reported)
-  if (_col == kWarm)
+  // analog video: as the warm-up ends (its band is then known before any narrow burst, which parts of
+  // it would pass for, can be reported), then once a window
+  if (_col == kWarm || _col == _vid_due)
     video(out);
 
   // the advertising channels: active while their three bins hold 6x their noise (gaps up to 10
@@ -457,56 +471,143 @@ bool Finder::ble(uint64_t s0, uint64_t s1, const AdvChan &a, Burst &b) const {
   return false;
 }
 
-// Analog video, FM (an analog FPV camera's transmitter, a video sender): every 200 ms, the last 0.8-2 ms
-// FM-demodulated (mixed by their power-weighted mean frequency, so it does not wrap) and averaged to
-// 5 MS/s. Its line sync is then a plateau of 4.7 us at one end of the frequency swing (the low or the
-// high end, depending on the transmitter) once a line. Pulses of 2.5-7.5 us beyond a fifth of the way
-// from that end (the 2% quantile) to the median, in a chain of whole line periods (misses and the
-// vertical interval's half-line pulses skipped), on 60% of the lines or more, fitted to within 0.4 us,
-// at 15.0-16.5 kHz: a video signal (15.625 kHz: 625 lines, PAL/SECAM; 15.734: 525, NTSC). Noise, Wi-Fi
-// and steady or keyed carriers leave no such chain. Its frequency: the mean, over the windows it is
-// found in (a stretch is a band of the picture: a bright sky shifts it).
+// Analog video, FM (an analog FPV camera's transmitter, a video sender), looked for in the last 0.8-2 ms
+// once a window, at a pseudo-random point in it. The stretch's mean is taken off first (the adapter's own
+// DC; an FM carrier averages out). At 40 MS/s three 20 MHz sub-bands (centred -10, 0 and +10 MHz: mixed
+// by quarter turns, halfband-filtered, to 20 MS/s) are looked at apart: Wi-Fi in the next channel
+// stays out of the demodulator, the noise is half, and two transmitters 20 MHz apart are both found.
+// A signal found in two of them is the one with the most sync pulses. Each one found is followed (its
+// frequency averaged; its band held 2 s, so a miss does not let its parts through as narrow bursts).
 void Finder::video(std::vector<Burst> &out) {
   const size_t n = std::min(_carry.size(), static_cast<size_t>(_fs * 2e-3));
   if (n < static_cast<size_t>(_fs * 0.8e-3))
     return;
   const cf *x = &_carry[_carry.size() - n];
-  cf acc = 0;
-  for (size_t i = 1; i < n; i++)
-    acc += x[i] * std::conj(x[i - 1]);
-  if (std::abs(acc) <= 0)
-    return;
-  const double f0 = std::arg(acc) * _fs / (2 * kPi);
-  const cf rot = std::conj(acc) / std::abs(acc); // mixes by -f0 (one sample's phase step)
-  const size_t D = static_cast<size_t>(std::lround(_fs / 5e6)); // 8 at 40 MS/s, 4 at 20
-  const double fv = _fs / static_cast<double>(D);
-  const float to_hz = static_cast<float>(fv / (2 * kPi)); // (a sum of D steps, averaged)
-  std::vector<float> v((n - 1) / D);
-  for (size_t m = 0; m < v.size(); m++) {
-    float s = 0;
-    for (size_t i = m * D + 1; i <= m * D + D; i++)
-      s += std::arg(x[i] * std::conj(x[i - 1]) * rot);
-    v[m] = s * to_hz; // Hz from f0
+  cf dc = 0;
+  for (size_t i = 0; i < n; i++)
+    dc += x[i];
+  dc /= static_cast<float>(n);
+  const bool wide = _fs > 30e6;
+  const size_t nt = _halfband.size();
+  std::vector<VideoHit> hits;
+  std::vector<cf> z(n), y;
+  static const cf kJ[4] = {{1, 0}, {0, 1}, {-1, 0}, {0, -1}}; // j^k
+  for (int c = wide ? -1 : 0; c <= (wide ? 1 : 0); c++) {
+    // mixed by -c fs/4: e^(-j c pi/2 i) = j^((4 - c) i)
+    for (size_t i = 0; i < n; i++)
+      z[i] = (x[i] - dc) * kJ[(static_cast<size_t>(4 - c) * i) & 3];
+    if (wide) { // halfband to 20 MS/s (its taps an even distance from the centre are zero, but the centre's)
+      y.resize((n - nt) / 2 + 1);
+      for (size_t k = 0; k < y.size(); k++) {
+        cf acc = z[2 * k + nt / 2] * _halfband[nt / 2];
+        for (size_t t = 0; t < nt; t += 2) // (nt / 2 is odd: these are the odd distances)
+          acc += z[2 * k + t] * _halfband[t];
+        y[k] = acc;
+      }
+    }
+    // (the polarity of a signal already followed here: a transmitter's sync does not change ends)
+    float prefer = 0;
+    for (const auto &v : _videos)
+      if (v.until > _t_end && std::abs(v.hz - _centre - c * _fs / 4) < 8e6)
+        prefer = v.sgn;
+    VideoHit h;
+    if (video_in(wide ? y : z, wide ? _fs / 2 : _fs, prefer, h)) {
+      h.band = c * _fs / 4;
+      h.hz += h.band;
+      hits.push_back(h);
+    }
   }
+  // one signal found in two sub-bands (the same sync tip, or about the same frequency): from the one it
+  // is nearest the middle of (the other cuts it: its picture's part, its mean frequency, may be missing)
+  std::sort(hits.begin(), hits.end(), [](const VideoHit &a, const VideoHit &b) { return std::abs(a.hz - a.band) < std::abs(b.hz - b.band); });
+  std::vector<VideoHit> kept;
+  const auto tip_hz = [](const VideoHit &h) { return h.hz + h.sgn * h.tip; };
+  for (const auto &h : hits)
+    if (std::none_of(kept.begin(), kept.end(), [&](const VideoHit &k) { return std::abs(k.hz - h.hz) < 8e6 || std::abs(tip_hz(k) - tip_hz(h)) < 3e6; }))
+      kept.push_back(h);
+  for (const auto &h : kept) {
+    // its band: from the sync tip to where white is (3.4 times the sync's depth: the swing whatever the
+    // picture holds), and 7 MHz either side (its sound subcarrier, 6-6.5 MHz from the carrier, puts
+    // steady lines there: about the occupied band by Carson's rule)
+    const double swing = 3.4 * (h.blank - h.tip), hz = _centre + h.hz;
+    const double e0 = hz + h.sgn * h.tip, e1 = e0 + h.sgn * swing;
+    size_t k = 0;
+    while (k < _videos.size() && !(_videos[k].until > _t_end && std::abs(_videos[k].hz - hz) < 6e6))
+      k++;
+    if (k == _videos.size())
+      _videos.push_back({hz, 0, 0, 0, h.sgn});
+    else
+      _videos[k].hz += 0.2 * (hz - _videos[k].hz);
+    Video &v = _videos[k];
+    v.lo = std::min(e0, e1) - 7e6;
+    v.hi = std::max(e0, e1) + 7e6;
+    v.until = _t_end + 2;
+    v.sgn = h.sgn;
+    Burst b;
+    b.t = _t_end - static_cast<double>(n) / _fs; // (the stretch looked at)
+    b.mhz = v.hz / 1e6;
+    b.bw_mhz = swing / 1e6;
+    b.dur_us = static_cast<double>(n) / _fs * 1e6;
+    b.kind = 'A';
+    b.line_khz = 1e-3 / h.line;
+    out.push_back(b);
+  }
+  _videos.erase(std::remove_if(_videos.begin(), _videos.end(), [&](const Video &v) { return v.until < _t_end - 1; }), _videos.end());
+}
+
+// One sub-band (or span): FM-demodulated about its centre (a sub-band holds ±8 MHz: the sub-bands
+// overlap, so a signal is within 5 MHz of one's centre) and averaged to 2.5 MS/s, with a 3-point median (an FM click, a one-sample spike under ~10 dB
+// CNR, is no pulse edge). Line sync is a plateau of 4.7 us at one end of the frequency swing (the low or
+// the high end, depending on the transmitter) once a line. Pulses of 2.5-7.5 us beyond a fifth of the
+// way from that end (2% quantile) to the median, in a chain of whole line periods (misses and the
+// vertical interval's half-line pulses skipped), on 60% of the lines or more, fitted to within 0.4 us,
+// at 15.0-16.5 kHz (15.625 kHz: 625 lines, PAL/SECAM; 15.734: 525, NTSC); at the same power during the
+// pulses as between them (FM: a carrier keyed on and off is no video signal); the level after them (the
+// back porch, blanking) the same on every line. A bright detail in the picture (a pole, an edge) makes
+// a chain at the other end: that of a signal already followed here (`prefer`) is kept to, else the end
+// whose sync is on more of the lines, with the steadier blanking, nearer 30% of the way from its tip to
+// the far end (blanking's place in either standard).
+// Noise, Wi-Fi and steady or keyed carriers leave no chain.
+bool Finder::video_in(const std::vector<cf> &y, double fs, float prefer, VideoHit &h) const {
+  const size_t n = y.size();
+  const size_t D = static_cast<size_t>(std::lround(fs / 2.5e6)); // 8 at 20 MS/s
+  const double fv = fs / static_cast<double>(D);
+  const float to_hz = static_cast<float>(fv / (2 * kPi)); // (a sum of D steps, averaged)
+  std::vector<float> u((n - 1) / D), p(u.size());
+  for (size_t m = 0; m < u.size(); m++) {
+    float s = 0, e = 0;
+    for (size_t i = m * D + 1; i <= m * D + D; i++) {
+      s += std::arg(y[i] * std::conj(y[i - 1]));
+      e += std::norm(y[i]);
+    }
+    u[m] = s * to_hz; // Hz from the sub-band's centre
+    p[m] = e / static_cast<float>(D);
+  }
+  if (u.size() < 3)
+    return false;
+  std::vector<float> v(u);
+  for (size_t m = 1; m + 1 < u.size(); m++)
+    v[m] = std::max(std::min(u[m - 1], u[m]), std::min(std::max(u[m - 1], u[m]), u[m + 1]));
   std::vector<float> srt = v;
-  const auto q = [&](double p) {
-    const auto k = srt.begin() + static_cast<long>(p * static_cast<double>(srt.size() - 1));
+  const auto q = [&](double pr) {
+    const auto k = srt.begin() + static_cast<long>(pr * static_cast<double>(srt.size() - 1));
     std::nth_element(srt.begin(), k, srt.end());
     return *k;
   };
   const float lo = q(0.02), med = q(0.5), hi = q(0.98);
-  const double line_min = fv / 16.5e3, line_max = fv / 15.0e3; // a line, in samples (303-333)
+  const double line_min = fv / 16.5e3, line_max = fv / 15.0e3; // a line, in samples (152-167)
   const int wmin = static_cast<int>(std::lround(2.5e-6 * fv)), wmax = static_cast<int>(std::lround(7.5e-6 * fv));
   const double tol = 1.2e-6 * fv;
-  struct Fit {
-    size_t pulses = 0;
-    double line = 0;              // samples
-    float sgn = 1, tip = 0, blank = 0; // the sync tip's and blanking's frequencies (sgn * Hz from f0)
-  } best;
+  const auto median = [](std::vector<float> &a) {
+    std::nth_element(a.begin(), a.begin() + static_cast<long>(a.size() / 2), a.end());
+    return a[a.size() / 2];
+  };
+  bool found = false;
+  float best_score = 0;
   for (const float sgn : {1.f, -1.f}) { // sync at the low end, at the high end
-    const float tip = sgn > 0 ? lo : -hi, mid = sgn * med;
-    if (mid - tip < 0.5e6f) // (no swing to speak of: a carrier)
-      continue;
+    const float tip = sgn > 0 ? lo : -hi, mid = sgn * med, far = sgn > 0 ? hi : -lo;
+    if (mid - tip < 0.5e6f || (prefer != 0 && sgn != prefer)) // (no swing to speak of: a carrier; a signal
+      continue;                                               //  followed here keeps its end)
     const float th = tip + 0.2f * (mid - tip);
     const auto below = [&](size_t m) { return sgn * v[m] < th; };
     std::vector<double> c; // the pulses' centres (samples)
@@ -562,45 +663,70 @@ void Finder::video(std::vector<Burst> &out) {
     double r2 = 0;
     for (const auto &[ln, cc] : chain)
       r2 += (cc - a - line * ln) * (cc - a - line * ln);
-    if (std::sqrt(r2 / N) > 0.4e-6 * fv || line < line_min || line > line_max || chain.size() <= best.pulses)
+    if (std::sqrt(r2 / N) > 0.4e-6 * fv || line < line_min || line > line_max)
       continue;
     // the sync tip (at the pulses' centres) and blanking (the back porch: 1-4 us after the pulse ends,
-    // before the picture in either standard), each the median over the pulses
-    std::vector<float> tips, porch;
+    // before the picture in either standard), each the median over the pulses; the power in both
+    std::vector<float> tips, porch, ratio, levels, line_porch;
+    const size_t r1 = static_cast<size_t>(1e-6 * fv), p0 = static_cast<size_t>(3.35e-6 * fv), p1 = static_cast<size_t>(6.35e-6 * fv);
     for (const auto &[ln, cc] : chain) {
-      const size_t m = static_cast<size_t>(cc);
-      for (size_t k = m - static_cast<size_t>(1e-6 * fv); k <= m + static_cast<size_t>(1e-6 * fv) && k < v.size(); k++)
+      const size_t m = static_cast<size_t>(cc); // (>= wmin / 2 > r1: a pulse starts after sample 0)
+      float pp = 0, pb = 0;
+      for (size_t k = m - r1; k <= m + r1 && k < v.size(); k++) {
         tips.push_back(sgn * v[k]);
-      for (size_t k = m + static_cast<size_t>(3.35e-6 * fv); k <= m + static_cast<size_t>(6.35e-6 * fv) && k < v.size(); k++)
+        pp += p[k];
+      }
+      line_porch.clear();
+      for (size_t k = m + p0; k <= m + p1 && k < v.size(); k++) {
         porch.push_back(sgn * v[k]);
+        line_porch.push_back(sgn * v[k]);
+        pb += p[k];
+      }
+      if (m + p1 < v.size() && pb > 0) {
+        ratio.push_back(pp / static_cast<float>(2 * r1 + 1) / (pb / static_cast<float>(p1 - p0 + 1)));
+        levels.push_back(median(line_porch));
+      }
     }
-    if (tips.empty() || porch.empty())
+    if (tips.empty() || porch.empty() || ratio.empty())
       continue;
-    std::nth_element(tips.begin(), tips.begin() + static_cast<long>(tips.size() / 2), tips.end());
-    std::nth_element(porch.begin(), porch.begin() + static_cast<long>(porch.size() / 2), porch.end());
-    best = {chain.size(), line, sgn, tips[tips.size() / 2], porch[porch.size() / 2]};
+    const float t = median(tips), bl = median(porch), pr = median(ratio);
+    // (sync is 30% of the way from its tip to white in either standard: a shallower one is none)
+    if (pr < 0.5f || pr > 2.f || bl - t < 0.1f * (hi - lo) || !(far > t))
+      continue;
+    // blanking is one level on every line; what follows a bright detail in the picture (a pole, an
+    // edge: they line up from line to line too) is whatever the picture holds there
+    for (float &l : levels)
+      l = std::abs(l - bl);
+    const float spread = median(levels) / (bl - t);
+    if (spread > 0.25f)
+      continue;
+    // the end with the better sync: on more of the lines, blanking steadier, at blanking's place
+    const float cover = static_cast<float>(N * line / static_cast<double>(v.size()));
+    const float score = (1 - std::min(cover, 1.f)) + 2 * spread + std::abs((bl - t) / (far - t) - 0.3f) - (sgn == prefer ? 1.f : 0.f);
+    if (!found || score < best_score) {
+      found = true;
+      best_score = score;
+      h = {0, 0, sgn, t, bl, line / fv, chain.size()};
+    }
   }
-  // (sync is 30% of the way from its tip to white in either standard: a shallower one is no video sync)
-  if (!best.pulses || best.blank - best.tip < 0.1f * (hi - lo))
-    return;
-  // its band: from the sync tip to where white is (3.4 times the sync's depth: the swing whatever the
-  // picture holds), and 7 MHz either side (its sound subcarrier, 6-6.5 MHz from the carrier, puts
-  // steady lines there: about the occupied band by Carson's rule)
-  const double swing = 3.4 * (best.blank - best.tip);
-  const double e0 = _centre + f0 + best.sgn * best.tip, e1 = e0 + best.sgn * swing;
-  const double prev = _vid_until > _t_end ? _vid_hz : f0; // (one found up to two windows ago: the same)
-  _vid_hz = prev + 0.2 * (f0 - prev);
-  _vid_lo = std::min(e0, e1) - 7e6;
-  _vid_hi = std::max(e0, e1) + 7e6;
-  _vid_until = _t_end + 0.45;
-  Burst b;
-  b.t = _t_end - static_cast<double>(n) / _fs; // (the stretch looked at)
-  b.mhz = (_centre + _vid_hz) / 1e6;
-  b.bw_mhz = swing / 1e6;
-  b.dur_us = static_cast<double>(n) / _fs * 1e6;
-  b.kind = 'A';
-  b.line_khz = fv / best.line / 1e3;
-  out.push_back(b);
+  if (!found)
+    return false;
+  // its mean frequency: the demodulated samples' mean where the power is its own (another signal over
+  // it, such as Wi-Fi in a sub-band's edge, raises the power)
+  std::vector<float> pw(p);
+  const float pm = median(pw);
+  double sum = 0;
+  size_t k = 0;
+  for (size_t m = 0; m < v.size(); m++)
+    if (p[m] > 0.5f * pm && p[m] < 1.5f * pm) {
+      sum += v[m];
+      k++;
+    }
+  const float mv = k ? static_cast<float>(sum / static_cast<double>(k)) : 0.f;
+  h.hz = mv;
+  h.tip -= h.sgn * mv; // (from hz now)
+  h.blank -= h.sgn * mv;
+  return true;
 }
 
 // Steady carriers: a fine spectrum (the last ~0.8 ms, 8192-point FFTs averaged) every 200 ms; a narrow
