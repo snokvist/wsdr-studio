@@ -714,7 +714,7 @@ export default function App() {
                     role="switch"
                     aria-checked={prefs.wifiMarks}
                     onClick={() => updatePrefs({ wifiMarks: !prefs.wifiMarks })}
-                    title="Finds Wi-Fi frames (802.11a/g/n/ac, and 802.11b at 2.4 GHz) and other signals (Bluetooth, other narrowband bursts, a microwave oven) in the samples themselves (continuous 20 and 40 MHz spans) and marks each on the waterfall; hover the waterfall for what they were."
+                    title="Finds Wi-Fi frames (802.11a/g/n/ac, and 802.11b at 2.4 GHz) and other signals (Bluetooth, other narrowband bursts, a microwave oven, analog video such as an FPV camera) in the samples themselves (continuous 20 and 40 MHz spans) and marks each on the waterfall; hover the waterfall for what they were."
                   >
                     <span className="tlabel">
                       Mark signals

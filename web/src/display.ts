@@ -5,6 +5,7 @@
 // frequencies are; the waterfall's lines are made of each view's newest row.
 import { channelsIn } from './channels';
 import { TURBO } from './colormap';
+import { videoText } from './fpv';
 import type { OtherSignal, Row, WifiFrame } from './protocol';
 
 export type DisplayOpts = {
@@ -34,7 +35,7 @@ export const WIFI_COLOUR = { L: '#ffffff', H: '#ff4fd8', V: '#c4a7ff', X: '#7fd3
 const WIFI_NAME = { L: 'legacy', H: '11n', V: '11ac', X: '11ax/be', B: '11b' } as const;
 // other signals share one colour (aquamarine); the hover names their kind
 export const OTHER_COLOUR = '#7fffd4';
-const OTHER_NAME = { T: 'Bluetooth', N: 'narrowband', M: 'microwave oven', E: 'BLE advertising', C: 'steady carrier' } as const;
+const OTHER_NAME = { T: 'Bluetooth', N: 'narrowband', M: 'microwave oven', E: 'BLE advertising', C: 'steady carrier', A: 'analog video' } as const;
 // video line rates (kHz: 480p, 1080i/p30, 720p50, 800x600, 720p60, 1024x768, 1080p50, 1280x1024,
 // 1080p60, 1440p60, 4K60): a steady carrier with a comb at one of these is most likely a display's pixel
 // clock harmonic (PAL/NTSC's ~15.7 kHz is below what the fine spectrum resolves)
@@ -685,7 +686,7 @@ export class Display {
     // (a BLE advertiser's address and name ride where a Wi-Fi frame's sender and network name do)
     const marks: Mark[] = [
       ...frames,
-      // (a steady carrier's comb rides in the rate slot)
+      // (a steady carrier's comb, analog video's line rate, ride in the rate slot)
       ...other.map((o): Mark => [o[0], o[1], o[2], o[3], o[8] ?? 0, 0, o[4], 0, o[5] ? `${o[5]}${o[6] ? ' (random)' : ''}` : null, null, o[7] ?? null]),
     ];
     for (const f of marks) {
@@ -773,9 +774,12 @@ export class Display {
     return `Wi-Fi ${ch}: ${hit.length} frame${hit.length > 1 ? 's' : ''} (${kinds})${rate} · SNR ${snr[snr.length >> 1].toFixed(0)} dB${who.length ? ` · from ${who.join(', ')}` : ''}${other ? ` · ${other}` : ''}${hit.some((k) => (this.wifiIds.get(k.f) ?? -1) >= this.keptFrom) ? ' · click: its constellation' : ''}`;
   }
 
-  // e.g. "Bluetooth 3, narrowband 1 · 2426 MHz · 366 µs"
-  private otherText(ms: Mark[]): string | null {
-    if (!ms.length) return null;
+  // e.g. "Bluetooth 3, narrowband 1 · 2426 MHz · 366 µs"; analog video first, on its own
+  private otherText(all: Mark[]): string | null {
+    const vids = all.filter((m) => m[3] === 'A'), ms = all.filter((m) => m[3] !== 'A');
+    const med = (a: number[]) => [...a].sort((x, y) => x - y)[a.length >> 1];
+    const analog = vids.length ? videoText(med(vids.map((m) => m[1])), med(vids.map((m) => m[4])), med(vids.map((m) => m[2]))) : null;
+    if (!ms.length) return analog;
     const by: Record<string, number> = {};
     for (const m of ms) by[OTHER_NAME[m[3] as OtherSignal[3]]] = (by[OTHER_NAME[m[3] as OtherSignal[3]]] ?? 0) + 1;
     const kinds = Object.entries(by).map(([k, n]) => (k === OTHER_NAME.M || k === OTHER_NAME.C ? k : `${k} ${n}`)).join(', ');
@@ -788,7 +792,7 @@ export class Display {
     // BLE advertisers: a name when they send one, else the address
     const ble = [...new Set(ms.filter((m) => m[3] === 'E').map((m) => (m[10] ? `“${m[10]}” ${m[8]}` : m[8])))].slice(0, 2);
     const mhz = carrier ? carrier[1].toFixed(3) : ms.map((m) => m[1]).sort((a, b) => a - b)[ms.length >> 1].toFixed(0);
-    return `${kinds} · ${mhz} MHz${us.length ? ` · ${us[us.length >> 1].toFixed(0)} µs` : ''}${ble.length ? ` · ${ble.join(', ')}` : ''}${combText}`;
+    return `${analog ? `${analog} · ` : ''}${kinds} · ${mhz} MHz${us.length ? ` · ${us[us.length >> 1].toFixed(0)} µs` : ''}${ble.length ? ` · ${ble.join(', ')}` : ''}${combText}`;
   }
 
   private drawSpectrum() {

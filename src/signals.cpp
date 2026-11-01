@@ -58,6 +58,7 @@ void Finder::reset(double fs, double centre_hz) {
   _ms_cols = _ms_loud = 0;
   _win_t0 = 0;
   _tfloor = 0;
+  _vid_lo = _vid_hi = _vid_until = _vid_hz = 0;
   if (!_nf)
     return;
   _win.resize(_nf);
@@ -193,10 +194,15 @@ void Finder::column(const cf *x, std::vector<Burst> &out) {
     _busy.push_back(static_cast<float>(_ms_loud) / kMsCols);
     _ms_cols = _ms_loud = 0;
     if (static_cast<int>(_busy.size()) == kWinMs) {
+      video(out);
       carriers(out);
       oven(out);
     }
   }
+  // (and once as the warm-up ends: a video signal's band is then known before any narrow burst, which
+  // parts of it would pass for, can be reported)
+  if (_col == kWarm)
+    video(out);
 
   // the advertising channels: active while their three bins hold 6x their noise (gaps up to 10
   // columns bridged); an active stretch of 50-512 us is decoded (below; longer is not a packet)
@@ -285,6 +291,10 @@ void Finder::end_track(size_t i, std::vector<Burst> &out) {
   b.mhz = bin_hz(tr.kw / tr.w) / 1e6;
   b.bw_mhz = (tr.b - tr.a + 1) * _fs / _nf / 1e6;
   b.dur_us = static_cast<double>(cols * static_cast<uint64_t>(_hop)) / _fs * 1e6;
+  // (an analog video signal's carrier is narrow at any instant and rests on a level for a whole line
+  // where the picture is even: it is not a burst of its own)
+  if (in_video(b.t, b.mhz * 1e6))
+    return;
   // Bluetooth hops: at 2.4 GHz, bursts of at most 3 ms, at least 4 within 100 ms on 3 frequencies
   b.kind = 'N';
   bool adv = false; // on an advertising channel: held until its decodes are in (it may be one of them)
@@ -447,6 +457,152 @@ bool Finder::ble(uint64_t s0, uint64_t s1, const AdvChan &a, Burst &b) const {
   return false;
 }
 
+// Analog video, FM (an analog FPV camera's transmitter, a video sender): every 200 ms, the last 0.8-2 ms
+// FM-demodulated (mixed by their power-weighted mean frequency, so it does not wrap) and averaged to
+// 5 MS/s. Its line sync is then a plateau of 4.7 us at one end of the frequency swing (the low or the
+// high end, depending on the transmitter) once a line. Pulses of 2.5-7.5 us beyond a fifth of the way
+// from that end (the 2% quantile) to the median, in a chain of whole line periods (misses and the
+// vertical interval's half-line pulses skipped), on 60% of the lines or more, fitted to within 0.4 us,
+// at 15.0-16.5 kHz: a video signal (15.625 kHz: 625 lines, PAL/SECAM; 15.734: 525, NTSC). Noise, Wi-Fi
+// and steady or keyed carriers leave no such chain. Its frequency: the mean, over the windows it is
+// found in (a stretch is a band of the picture: a bright sky shifts it).
+void Finder::video(std::vector<Burst> &out) {
+  const size_t n = std::min(_carry.size(), static_cast<size_t>(_fs * 2e-3));
+  if (n < static_cast<size_t>(_fs * 0.8e-3))
+    return;
+  const cf *x = &_carry[_carry.size() - n];
+  cf acc = 0;
+  for (size_t i = 1; i < n; i++)
+    acc += x[i] * std::conj(x[i - 1]);
+  if (std::abs(acc) <= 0)
+    return;
+  const double f0 = std::arg(acc) * _fs / (2 * kPi);
+  const cf rot = std::conj(acc) / std::abs(acc); // mixes by -f0 (one sample's phase step)
+  const size_t D = static_cast<size_t>(std::lround(_fs / 5e6)); // 8 at 40 MS/s, 4 at 20
+  const double fv = _fs / static_cast<double>(D);
+  const float to_hz = static_cast<float>(fv / (2 * kPi)); // (a sum of D steps, averaged)
+  std::vector<float> v((n - 1) / D);
+  for (size_t m = 0; m < v.size(); m++) {
+    float s = 0;
+    for (size_t i = m * D + 1; i <= m * D + D; i++)
+      s += std::arg(x[i] * std::conj(x[i - 1]) * rot);
+    v[m] = s * to_hz; // Hz from f0
+  }
+  std::vector<float> srt = v;
+  const auto q = [&](double p) {
+    const auto k = srt.begin() + static_cast<long>(p * static_cast<double>(srt.size() - 1));
+    std::nth_element(srt.begin(), k, srt.end());
+    return *k;
+  };
+  const float lo = q(0.02), med = q(0.5), hi = q(0.98);
+  const double line_min = fv / 16.5e3, line_max = fv / 15.0e3; // a line, in samples (303-333)
+  const int wmin = static_cast<int>(std::lround(2.5e-6 * fv)), wmax = static_cast<int>(std::lround(7.5e-6 * fv));
+  const double tol = 1.2e-6 * fv;
+  struct Fit {
+    size_t pulses = 0;
+    double line = 0;              // samples
+    float sgn = 1, tip = 0, blank = 0; // the sync tip's and blanking's frequencies (sgn * Hz from f0)
+  } best;
+  for (const float sgn : {1.f, -1.f}) { // sync at the low end, at the high end
+    const float tip = sgn > 0 ? lo : -hi, mid = sgn * med;
+    if (mid - tip < 0.5e6f) // (no swing to speak of: a carrier)
+      continue;
+    const float th = tip + 0.2f * (mid - tip);
+    const auto below = [&](size_t m) { return sgn * v[m] < th; };
+    std::vector<double> c; // the pulses' centres (samples)
+    for (size_t m = 0; m < v.size();) {
+      if (!below(m)) {
+        m++;
+        continue;
+      }
+      size_t e = m; // the run, a one-sample excursion over the threshold bridged
+      while (e + 1 < v.size() && (below(e + 1) || (e + 2 < v.size() && below(e + 2))))
+        e++;
+      const int len = static_cast<int>(e - m + 1);
+      if (len >= wmin && len <= wmax && m > 0 && e + 1 < v.size()) // (not cut by the stretch's ends)
+        c.push_back(0.5 * static_cast<double>(m + e));
+      m = e + 1;
+    }
+    // the line period: the median spacing of neighbours a line apart
+    std::vector<double> d;
+    for (size_t i = 1; i < c.size(); i++)
+      if (c[i] - c[i - 1] > line_min && c[i] - c[i - 1] < line_max)
+        d.push_back(c[i] - c[i - 1]);
+    if (d.size() < 3)
+      continue;
+    std::nth_element(d.begin(), d.begin() + static_cast<long>(d.size() / 2), d.end());
+    const double L0 = d[d.size() / 2];
+    // the longest chain of pulses whole lines apart (each step from the last pulse taken, up to 10
+    // lines: the vertical interval has none at a line's start for ~8)
+    std::vector<std::pair<double, double>> chain; // (line number, centre)
+    for (size_t j = 0; j < c.size() && c.size() - j > chain.size(); j++) {
+      std::vector<std::pair<double, double>> ch{{0, c[j]}};
+      for (size_t i = j + 1; i < c.size(); i++) {
+        const double dd = c[i] - ch.back().second, k = std::round(dd / L0);
+        if (k >= 1 && k <= 10 && std::abs(dd - k * L0) < tol)
+          ch.emplace_back(ch.back().first + k, c[i]);
+      }
+      if (ch.size() > chain.size())
+        chain.swap(ch);
+    }
+    if (chain.size() < 6 || static_cast<double>(chain.size()) < 0.6 * static_cast<double>(v.size()) / L0)
+      continue;
+    // least squares: centre = a + line * number
+    double sn = 0, sc = 0, snn = 0, snc = 0;
+    for (const auto &[ln, cc] : chain) {
+      sn += ln;
+      sc += cc;
+      snn += ln * ln;
+      snc += ln * cc;
+    }
+    const double N = static_cast<double>(chain.size()), den = N * snn - sn * sn;
+    if (den <= 0)
+      continue;
+    const double line = (N * snc - sn * sc) / den, a = (sc - line * sn) / N;
+    double r2 = 0;
+    for (const auto &[ln, cc] : chain)
+      r2 += (cc - a - line * ln) * (cc - a - line * ln);
+    if (std::sqrt(r2 / N) > 0.4e-6 * fv || line < line_min || line > line_max || chain.size() <= best.pulses)
+      continue;
+    // the sync tip (at the pulses' centres) and blanking (the back porch: 1-4 us after the pulse ends,
+    // before the picture in either standard), each the median over the pulses
+    std::vector<float> tips, porch;
+    for (const auto &[ln, cc] : chain) {
+      const size_t m = static_cast<size_t>(cc);
+      for (size_t k = m - static_cast<size_t>(1e-6 * fv); k <= m + static_cast<size_t>(1e-6 * fv) && k < v.size(); k++)
+        tips.push_back(sgn * v[k]);
+      for (size_t k = m + static_cast<size_t>(3.35e-6 * fv); k <= m + static_cast<size_t>(6.35e-6 * fv) && k < v.size(); k++)
+        porch.push_back(sgn * v[k]);
+    }
+    if (tips.empty() || porch.empty())
+      continue;
+    std::nth_element(tips.begin(), tips.begin() + static_cast<long>(tips.size() / 2), tips.end());
+    std::nth_element(porch.begin(), porch.begin() + static_cast<long>(porch.size() / 2), porch.end());
+    best = {chain.size(), line, sgn, tips[tips.size() / 2], porch[porch.size() / 2]};
+  }
+  // (sync is 30% of the way from its tip to white in either standard: a shallower one is no video sync)
+  if (!best.pulses || best.blank - best.tip < 0.1f * (hi - lo))
+    return;
+  // its band: from the sync tip to where white is (3.4 times the sync's depth: the swing whatever the
+  // picture holds), and 7 MHz either side (its sound subcarrier, 6-6.5 MHz from the carrier, puts
+  // steady lines there: about the occupied band by Carson's rule)
+  const double swing = 3.4 * (best.blank - best.tip);
+  const double e0 = _centre + f0 + best.sgn * best.tip, e1 = e0 + best.sgn * swing;
+  const double prev = _vid_until > _t_end ? _vid_hz : f0; // (one found up to two windows ago: the same)
+  _vid_hz = prev + 0.2 * (f0 - prev);
+  _vid_lo = std::min(e0, e1) - 7e6;
+  _vid_hi = std::max(e0, e1) + 7e6;
+  _vid_until = _t_end + 0.45;
+  Burst b;
+  b.t = _t_end - static_cast<double>(n) / _fs; // (the stretch looked at)
+  b.mhz = (_centre + _vid_hz) / 1e6;
+  b.bw_mhz = swing / 1e6;
+  b.dur_us = static_cast<double>(n) / _fs * 1e6;
+  b.kind = 'A';
+  b.line_khz = fv / best.line / 1e3;
+  out.push_back(b);
+}
+
 // Steady carriers: a fine spectrum (the last ~0.8 ms, 8192-point FFTs averaged) every 200 ms; a narrow
 // line 10 dB over its 1.25 MHz block's median that is there in 3 of the last 4 windows is reported,
 // with the spacing of evenly spaced lines around it (a carrier switched at a steady rate: a display's
@@ -506,8 +662,8 @@ void Finder::carriers(std::vector<Burst> &out) {
   _steady.erase(std::remove_if(_steady.begin(), _steady.end(), [](const Line &l) { return l.seen == 0; }), _steady.end());
   for (auto &l : _steady) {
     const int k = l.k;
-    if (!(l.seen & 1) || __builtin_popcount(l.seen) < 3)
-      continue;
+    if (!(l.seen & 1) || __builtin_popcount(l.seen) < 3 || in_video(_win_t0, hz(k))) // (a video signal's sync and
+      continue;                                                                     //  blanking levels are lines too)
     Burst b;
     b.t = _win_t0;
     b.mhz = hz(k) / 1e6;

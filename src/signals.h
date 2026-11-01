@@ -3,8 +3,9 @@
 // bursts from a short-time spectrum (Bluetooth when they hop, else "narrowband"), and a microwave
 // oven from the span's activity switching with the mains. A narrow burst on a BLE advertising channel
 // is decoded (its device address and name). A narrow line that stays (a steady carrier) is reported
-// with the spacing of the comb around it, if any (a video line rate: a display clock's harmonic).
-// Receive only.
+// with the spacing of the comb around it, if any (a video line rate: a display clock's harmonic). An
+// analog video signal (FM, as an analog FPV drone camera or a video sender transmits it) is found by its
+// line sync after FM demodulation, with its line rate (PAL/SECAM or NTSC). Receive only.
 #pragma once
 
 #include <complex>
@@ -24,9 +25,11 @@ struct Burst {
   double bw_mhz = 0; // width
   double dur_us = 0;
   // 'T' Bluetooth (narrow bursts hopping), 'N' other narrowband, 'M' microwave oven, 'E' BLE advertising
-  // (decoded: CRC good), 'C' a steady carrier (every 200 ms while it lasts)
+  // (decoded: CRC good), 'C' a steady carrier (every 200 ms while it lasts), 'A' analog video, FM
+  // (every 200 ms while it lasts; mhz: its mean frequency, bw_mhz: its swing, sync tip to peak)
   char kind = 'N';
   double comb_khz = 0; // 'C': the spacing of evenly spaced lines around it (0: none)
+  double line_khz = 0; // 'A': its line rate (15.625 kHz: 625 lines, PAL/SECAM; 15.734: 525, NTSC)
   std::string addr;  // 'E': the advertiser's address (aa:bb:..., as shown by phones)
   bool random = false; // 'E': a random (often rotating) address rather than a public one
   std::string name;  // 'E': its name, if it sends one (UTF-8 checked)
@@ -71,6 +74,11 @@ private:
   std::vector<std::pair<double, double>> _decoded; // decoded packets' times (s): a burst over one is it
   void oven(std::vector<Burst> &out); // every 200 ms
   void carriers(std::vector<Burst> &out); // every 200 ms
+  void video(std::vector<Burst> &out);    // every 200 ms (before carriers(): parts of it are no carrier)
+  bool in_video(double t, double hz) const { return t < _vid_until && hz > _vid_lo && hz < _vid_hi; }
+  double _vid_lo = 0, _vid_hi = 0;   // the band of the last video signal found (Hz) ...
+  double _vid_until = 0;             // ... until then (s): narrow bursts and carriers in it are its own
+  double _vid_hz = 0;                // its mean frequency, averaged over the windows it was found in
   double time_of(uint64_t sample) const { return _t_end - static_cast<double>(_abs_end - sample) / _fs; }
   double bin_hz(double k) const { return _centre + (k - 0.5 * _nf) * _fs / _nf; }
 
