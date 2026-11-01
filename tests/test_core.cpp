@@ -1424,6 +1424,72 @@ static void test_video() {
   }
 }
 
+// Analog video followed over time (20 MS/s, tuned to 5800 MHz): noise for 0.25 s; then PAL on 5801
+// MHz (sync high, a white bar in the picture) for 1.2 s; then gone, and narrow bursts (366 us every 5 ms)
+// at 5801 MHz, inside its band, for 2.3 s. It is found soon after it comes on (its first parts, narrow
+// bursts close together, bring a look forward), with few narrow marks before; every look takes the
+// right end (the deviation shows it) and the averaged frequency settles (within 1 MHz; each mark within
+// 2.5 MHz: a look on the vertical interval reads ~2 MHz off); its band is held 2 s after the last look
+// found it (no narrow marks), then let go (the bursts are marked).
+static void test_video_follow() {
+  const double fs = 20e6;
+  sig::Finder f;
+  f.reset(fs, 5800e6);
+  FmVideo gen(false, fs, 1e6, 8e6, -1, 15, true);
+  std::mt19937 rng(7);
+  std::uniform_int_distribution<int> bit(0, 1);
+  const std::vector<float> &nz = gen.noise; // (its noise table, at its CNR)
+  std::vector<std::complex<float>> x(8192);
+  std::vector<sig::Burst> out;
+  double ph = 0;
+  int b = 0;
+  for (uint64_t i = 0; i < static_cast<uint64_t>(3.75 * fs); i += x.size()) {
+    const double t0 = static_cast<double>(i) / fs;
+    if (t0 >= 0.25 && t0 < 1.45) {
+      gen.fill(x.data(), x.size());
+    } else {
+      for (size_t j = 0; j < x.size(); j++) {
+        const uint64_t k = i + j;
+        x[j] = {nz[(2 * k * 7919) & (nz.size() - 1)], nz[(2 * k * 7919 + 1) & (nz.size() - 1)]};
+        if (t0 >= 1.45 && (k % 100000) < 7320) { // 366 us of every 5 ms, GFSK-like at +1 MHz
+          if (k % 20 == 0)
+            b = bit(rng);
+          ph = std::remainder(ph + 2 * M_PI * (1e6 + (b ? 250e3 : -250e3)) / fs, 2 * M_PI);
+          x[j] += std::polar(0.3f, static_cast<float>(ph));
+        }
+      }
+    }
+    f.feed(x.data(), x.size(), static_cast<double>(i + x.size()) / fs, out);
+  }
+  double first = 1e9;
+  int marks = 0, right = 0, before = 0, held = 0, after = 0;
+  double last_mhz = 0;
+  for (const auto &m : out)
+    if (m.kind == 'A') {
+      first = std::min(first, m.t);
+      marks++;
+      right += std::abs(m.line_khz - 15.625) < 0.02 && std::abs(m.bw_mhz - 8) < 1.2 && std::abs(m.mhz - 5801) < 2.5;
+      last_mhz = m.mhz;
+    }
+  for (const auto &m : out) {
+    if (m.kind == 'A')
+      continue;
+    before += m.t < first;
+    held += m.t > 1.5 && m.t < 3.3;
+    after += m.t > 3.5;
+  }
+  const bool good = first < 0.32 && before <= 10 && marks >= 7 && right == marks && std::abs(last_mhz - 5801) < 1.0 && held == 0 && after >= 10;
+  CHECK(good);
+  if (!good || std::getenv("TEST_VERBOSE"))
+  {
+    std::printf("  (video followed: first at %.3f s, %d narrow before; %d marks, %d right, last %.2f MHz; %d narrow while held, %d after)\n",
+                first, before, marks, right, last_mhz, held, after);
+    for (const auto &m : out)
+      if (m.kind == 'A')
+        std::printf("    A %.2f MHz bw %.2f line %.3f kHz t %.4f us %.0f\n", m.mhz, m.bw_mhz, m.line_khz, m.t, m.dur_us);
+  }
+}
+
 // A BLE advertisement (ADV_IND from a random address c0:ff:ee:12:34:56 with the name "test-ble"),
 // GFSK (BT 0.5, +-250 kHz) on channel 38 (2426 MHz) 40 kHz off, at 40 MS/s around 2422 MHz: decoded.
 static void test_ble() {
@@ -1649,6 +1715,7 @@ int main(int argc, char **argv) {
   test_dsss_beacon();
   test_signals();
   test_video();
+  test_video_follow();
   test_ble();
   std::printf(g_fail ? "%d FAILED\n" : "all tests passed\n", g_fail);
   return g_fail ? 1 : 0;

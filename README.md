@@ -159,7 +159,7 @@ The window needs at least 1280 × 720.
   lines across 5 GHz).
   Analog video sent as FM (an analog FPV drone's camera transmitter at 5.8 GHz, a 2.4 GHz video
   sender) is found by its line sync after FM demodulation, about five times a second, beside Wi-Fi
-  too, and two at once when they are 20 MHz apart. The hover names its standard from the line rate
+  too, and two at once when they are 20 MHz apart. The hover, anywhere over its band, names its standard from the line rate
   (PAL/SECAM 625 lines or NTSC 525), its mean frequency (≈: the picture can shift it by a MHz or so)
   with the FPV channels near it (bands A, B, E, F, R, L), and its deviation (sync tip to white). It
   is found down to about where its picture breaks up into sparklies. Narrow bursts and steady

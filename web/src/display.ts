@@ -5,7 +5,7 @@
 // frequencies are; the waterfall's lines are made of each view's newest row.
 import { channelsIn } from './channels';
 import { TURBO } from './colormap';
-import { videoText } from './fpv';
+import { nearestTransmitter, videoText } from './fpv';
 import type { OtherSignal, Row, WifiFrame } from './protocol';
 
 export type DisplayOpts = {
@@ -100,6 +100,7 @@ export class Display {
   private wifiKept: { f: Mark; row: number }[] = [];
   private wifiNames = new Map<string, string>(); // BSSID -> network name, from the beacons seen here
   private wifiIds = new WeakMap<Mark, number>(); // the backend's frame ids (its "points" command)
+  private videoBand = new WeakMap<Mark, [number, number]>(); // analog video's band (MHz): its hover covers it
   private keptFrom = 0;                          // the oldest id whose points the backend still keeps
   private hover: number | null = null; // CSS x
   private hoverWfY = -1;               // CSS y over the waterfall (-1: over the spectrum)
@@ -687,7 +688,11 @@ export class Display {
     const marks: Mark[] = [
       ...frames,
       // (a steady carrier's comb, analog video's line rate, ride in the rate slot)
-      ...other.map((o): Mark => [o[0], o[1], o[2], o[3], o[8] ?? 0, 0, o[4], 0, o[5] ? `${o[5]}${o[6] ? ' (random)' : ''}` : null, null, o[7] ?? null]),
+      ...other.map((o): Mark => {
+        const m: Mark = [o[0], o[1], o[2], o[3], o[8] ?? 0, 0, o[4], 0, o[5] ? `${o[5]}${o[6] ? ' (random)' : ''}` : null, null, o[7] ?? null];
+        if (o[3] === 'A' && typeof o[9] === 'number' && typeof o[10] === 'number') this.videoBand.set(m, [o[9], o[10]]);
+        return m;
+      }),
     ];
     for (const f of marks) {
       if (f[9] && f[10] != null && (f[10] || !this.wifiNames.has(f[9]))) {
@@ -750,9 +755,14 @@ export class Display {
   // The Wi-Fi frames and other signals under the pointer: on that row (+-2) and covering that frequency
   private wifiAt(f: number, rowsAgo: number): string | null {
     const row = this.rowNo - rowsAgo;
-    const near = this.wifiKept.filter((k) => Math.abs(k.row - row) <= 2 && Math.abs(f - k.f[1] * 1e6) <= (k.f[2] / 2) * 1e6);
+    // (a mark covers its width about its centre; analog video its whole band)
+    const covers = (m: Mark) => {
+      const b = this.videoBand.get(m);
+      return b ? f >= b[0] * 1e6 && f <= b[1] * 1e6 : Math.abs(f - m[1] * 1e6) <= (m[2] / 2) * 1e6;
+    };
+    const near = this.wifiKept.filter((k) => Math.abs(k.row - row) <= 2 && covers(k.f));
     const hit = near.filter((k) => isWifi(k.f)), oth = near.filter((k) => !isWifi(k.f));
-    const other = this.otherText(oth.map((k) => k.f));
+    const other = this.otherText(oth.map((k) => k.f), f);
     if (!hit.length) return other;
     const by: Record<string, number> = {};
     for (const k of hit) {
@@ -774,11 +784,13 @@ export class Display {
     return `Wi-Fi ${ch}: ${hit.length} frame${hit.length > 1 ? 's' : ''} (${kinds})${rate} · SNR ${snr[snr.length >> 1].toFixed(0)} dB${who.length ? ` · from ${who.join(', ')}` : ''}${other ? ` · ${other}` : ''}${hit.some((k) => (this.wifiIds.get(k.f) ?? -1) >= this.keptFrom) ? ' · click: its constellation' : ''}`;
   }
 
-  // e.g. "Bluetooth 3, narrowband 1 · 2426 MHz · 366 µs"; analog video first, on its own
-  private otherText(all: Mark[]): string | null {
-    const vids = all.filter((m) => m[3] === 'A'), ms = all.filter((m) => m[3] !== 'A');
+  // e.g. "Bluetooth 3, narrowband 1 · 2426 MHz · 366 µs"; analog video first, on its own (the
+  // transmitter nearest the pointer at `hz`)
+  private otherText(all: Mark[], hz: number): string | null {
+    const ms = all.filter((m) => m[3] !== 'A');
+    const vids = nearestTransmitter(all.filter((m) => m[3] === 'A').map((m) => ({ mhz: m[1], line: m[4], dev: m[2] })), hz);
     const med = (a: number[]) => [...a].sort((x, y) => x - y)[a.length >> 1];
-    const analog = vids.length ? videoText(med(vids.map((m) => m[1])), med(vids.map((m) => m[4])), med(vids.map((m) => m[2]))) : null;
+    const analog = vids.length ? videoText(med(vids.map((v) => v.mhz)), med(vids.map((v) => v.line)), med(vids.map((v) => v.dev))) : null;
     if (!ms.length) return analog;
     const by: Record<string, number> = {};
     for (const m of ms) by[OTHER_NAME[m[3] as OtherSignal[3]]] = (by[OTHER_NAME[m[3] as OtherSignal[3]]] ?? 0) + 1;

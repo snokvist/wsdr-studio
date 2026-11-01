@@ -31,6 +31,15 @@ export function videoStandard(lineKhz: number): string {
   return `${lineKhz.toFixed(3)} kHz lines`;
 }
 
+// Of the analog video marks under the pointer (at `hz`, Hz), those of the transmitter nearest it: the
+// nearest mark, and those within 6 MHz of it with the same line rate (two transmitters whose marks
+// meet at one place are not described as one)
+export function nearestTransmitter<T extends { mhz: number; line: number }>(marks: T[], hz: number): T[] {
+  if (!marks.length) return [];
+  const ref = marks.reduce((a, b) => (Math.abs(b.mhz * 1e6 - hz) < Math.abs(a.mhz * 1e6 - hz) ? b : a));
+  return marks.filter((m) => Math.abs(m.mhz - ref.mhz) < 6 && Math.abs(m.line - ref.line) < 0.05);
+}
+
 // The hover's text for it: "analog video, FM (NTSC, 525 lines) · ≈5806 MHz, FPV R5 5806 or A4 5805 ·
 // deviation 8 MHz p-p" (swing: sync tip to white)
 export function videoText(mhz: number, lineKhz: number, swingMhz: number): string {

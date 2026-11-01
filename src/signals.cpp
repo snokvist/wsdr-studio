@@ -59,7 +59,9 @@ void Finder::reset(double fs, double centre_hz) {
   _win_t0 = 0;
   _tfloor = 0;
   _videos.clear();
-  _vid_due = 0;
+  _vid_due = _vid_soon = kNever;
+  _vid_quiet = 0;
+  _nb_n = 0;
   _vid_rng = 1;
   if (_halfband.empty()) { // 31 taps (centre 15), Hamming: flat to ~+-8 MHz of a sub-band at 40 MS/s, ~50 dB down past +-12
     for (int i = 0; i < 31; i++) {
@@ -214,8 +216,9 @@ void Finder::column(const cf *x, std::vector<Burst> &out) {
     }
   }
   // analog video: as the warm-up ends (its band is then known before any narrow burst, which parts of
-  // it would pass for, can be reported), then once a window
-  if (_col == kWarm || _col == _vid_due)
+  // it would pass for, can be reported), then once a window, and sooner when narrow bursts crowd in
+  // (end_track)
+  if (_col == kWarm || _col == _vid_due || _col == _vid_soon)
     video(out);
 
   // the advertising channels: active while their three bins hold 6x their noise (gaps up to 10
@@ -309,6 +312,21 @@ void Finder::end_track(size_t i, std::vector<Burst> &out) {
   // where the picture is even: it is not a burst of its own)
   if (in_video(b.t, b.mhz * 1e6))
     return;
+  // 5 or more narrow bursts within 50 ms and 16 MHz (not Bluetooth hopping across the span): perhaps
+  // the parts of a video signal that just came on (or that the last look missed). Look now, not at the
+  // next window (at most once per 100 ms: a look costs ~4 ms at 40 MS/s)
+  if (b.t - _nb_t0 > 0.05 || _nb_n == 0) {
+    _nb_t0 = b.t;
+    _nb_lo = _nb_hi = b.mhz;
+    _nb_n = 0;
+  }
+  _nb_lo = std::min(_nb_lo, b.mhz);
+  _nb_hi = std::max(_nb_hi, b.mhz);
+  if (++_nb_n >= 5 && _nb_hi - _nb_lo < 16 && _col >= _vid_quiet) {
+    _vid_soon = _col + 1;
+    _vid_quiet = _col + 15625; // (100 ms of columns)
+    _nb_n = 0;
+  }
   // Bluetooth hops: at 2.4 GHz, bursts of at most 3 ms, at least 4 within 100 ms on 3 frequencies
   b.kind = 'N';
   bool adv = false; // on an advertising channel: held until its decodes are in (it may be one of them)
@@ -476,8 +494,9 @@ bool Finder::ble(uint64_t s0, uint64_t s1, const AdvChan &a, Burst &b) const {
 // DC; an FM carrier averages out). At 40 MS/s three 20 MHz sub-bands (centred -10, 0 and +10 MHz: mixed
 // by quarter turns, halfband-filtered, to 20 MS/s) are looked at apart: Wi-Fi in the next channel
 // stays out of the demodulator, the noise is half, and two transmitters 20 MHz apart are both found.
-// A signal found in two of them is the one with the most sync pulses. Each one found is followed (its
-// frequency averaged; its band held 2 s, so a miss does not let its parts through as narrow bursts).
+// A signal found in two of them is taken from the one it is nearest the middle of. Each one found is
+// followed (its frequency averaged; its band held 2 s, so a miss does not let its parts through as
+// narrow bursts).
 void Finder::video(std::vector<Burst> &out) {
   const size_t n = std::min(_carry.size(), static_cast<size_t>(_fs * 2e-3));
   if (n < static_cast<size_t>(_fs * 0.8e-3))
@@ -490,20 +509,33 @@ void Finder::video(std::vector<Burst> &out) {
   const bool wide = _fs > 30e6;
   const size_t nt = _halfband.size();
   std::vector<VideoHit> hits;
-  std::vector<cf> z(n), y;
   static const cf kJ[4] = {{1, 0}, {0, 1}, {-1, 0}, {0, -1}}; // j^k
   for (int c = wide ? -1 : 0; c <= (wide ? 1 : 0); c++) {
-    // mixed by -c fs/4: e^(-j c pi/2 i) = j^((4 - c) i)
-    for (size_t i = 0; i < n; i++)
-      z[i] = (x[i] - dc) * kJ[(static_cast<size_t>(4 - c) * i) & 3];
-    if (wide) { // halfband to 20 MS/s (its taps an even distance from the centre are zero, but the centre's)
-      y.resize((n - nt) / 2 + 1);
-      for (size_t k = 0; k < y.size(); k++) {
-        cf acc = z[2 * k + nt / 2] * _halfband[nt / 2];
-        for (size_t t = 0; t < nt; t += 2) // (nt / 2 is odd: these are the odd distances)
-          acc += z[2 * k + t] * _halfband[t];
-        y[k] = acc;
+    if (wide) {
+      // mixed by -c fs/4 (r^i, r = j^(4 - c)), halfband-filtered, every other sample: y[k] = sum_t h[t]
+      // (x[2k+t] - dc) r^(2k+t) = r^2k (sum_t (h[t] r^t) x[2k+t] - dc sum_t h[t] r^t), and r^2k = (-1)^(ck).
+      // Its taps an even distance from the centre (15, odd) are zero, but the centre's.
+      cf g[32], gsum = 0; // (17 of the 31: the even indices and the centre)
+      size_t at[32], ng = 0;
+      static_assert(sizeof g / sizeof g[0] >= 31);
+      for (size_t t = 0; t < nt && t < 32; t++)
+        if (t % 2 == 0 || t == nt / 2) {
+          at[ng] = t;
+          g[ng] = _halfband[t] * kJ[(static_cast<size_t>(4 - c) * t) & 3];
+          gsum += g[ng++];
+        }
+      const cf off = dc * gsum;
+      _vy.resize((n - nt) / 2 + 1);
+      for (size_t k = 0; k < _vy.size(); k++) {
+        cf acc = 0;
+        for (size_t q = 0; q < ng; q++)
+          acc += x[2 * k + at[q]] * g[q];
+        _vy[k] = (c != 0 && (k & 1)) ? off - acc : acc - off;
       }
+    } else {
+      _vy.assign(x, x + n);
+      for (auto &v : _vy)
+        v -= dc;
     }
     // (the polarity of a signal already followed here: a transmitter's sync does not change ends)
     float prefer = 0;
@@ -511,7 +543,7 @@ void Finder::video(std::vector<Burst> &out) {
       if (v.until > _t_end && std::abs(v.hz - _centre - c * _fs / 4) < 8e6)
         prefer = v.sgn;
     VideoHit h;
-    if (video_in(wide ? y : z, wide ? _fs / 2 : _fs, prefer, h)) {
+    if (video_in(_vy, wide ? _fs / 2 : _fs, prefer, h)) {
       h.band = c * _fs / 4;
       h.hz += h.band;
       hits.push_back(h);
@@ -535,10 +567,12 @@ void Finder::video(std::vector<Burst> &out) {
     while (k < _videos.size() && !(_videos[k].until > _t_end && std::abs(_videos[k].hz - hz) < 6e6))
       k++;
     if (k == _videos.size())
-      _videos.push_back({hz, 0, 0, 0, h.sgn});
-    else
-      _videos[k].hz += 0.2 * (hz - _videos[k].hz);
+      _videos.push_back({hz, 0, 0, 0, h.sgn, 0});
     Video &v = _videos[k];
+    // (each look is a band of the picture, one on the vertical interval or a bright sky reads a MHz or
+    // two off: the mean of the looks, then of about the last 10)
+    v.looks++;
+    v.hz += std::max(1.0 / v.looks, 0.1) * (hz - v.hz);
     v.lo = std::min(e0, e1) - 7e6;
     v.hi = std::max(e0, e1) + 7e6;
     v.until = _t_end + 2;
@@ -550,6 +584,8 @@ void Finder::video(std::vector<Burst> &out) {
     b.dur_us = static_cast<double>(n) / _fs * 1e6;
     b.kind = 'A';
     b.line_khz = 1e-3 / h.line;
+    b.lo_mhz = v.lo / 1e6;
+    b.hi_mhz = v.hi / 1e6;
     out.push_back(b);
   }
   _videos.erase(std::remove_if(_videos.begin(), _videos.end(), [&](const Video &v) { return v.until < _t_end - 1; }), _videos.end());
@@ -564,9 +600,10 @@ void Finder::video(std::vector<Burst> &out) {
 // at 15.0-16.5 kHz (15.625 kHz: 625 lines, PAL/SECAM; 15.734: 525, NTSC); at the same power during the
 // pulses as between them (FM: a carrier keyed on and off is no video signal); the level after them (the
 // back porch, blanking) the same on every line. A bright detail in the picture (a pole, an edge) makes
-// a chain at the other end: that of a signal already followed here (`prefer`) is kept to, else the end
-// whose sync is on more of the lines, with the steadier blanking, nearer 30% of the way from its tip to
-// the far end (blanking's place in either standard).
+// a chain at the other end: the end whose sync is on more of the lines, with the steadier blanking,
+// nearer 30% of the way from its tip to the far end (blanking's place in either standard) is taken; that
+// of a signal already followed here (`prefer`) unless the other's is on 90% of the lines or more with
+// blanking within 10% of the sync's depth.
 // Noise, Wi-Fi and steady or keyed carriers leave no chain.
 bool Finder::video_in(const std::vector<cf> &y, double fs, float prefer, VideoHit &h) const {
   const size_t n = y.size();
@@ -606,8 +643,8 @@ bool Finder::video_in(const std::vector<cf> &y, double fs, float prefer, VideoHi
   float best_score = 0;
   for (const float sgn : {1.f, -1.f}) { // sync at the low end, at the high end
     const float tip = sgn > 0 ? lo : -hi, mid = sgn * med, far = sgn > 0 ? hi : -lo;
-    if (mid - tip < 0.5e6f || (prefer != 0 && sgn != prefer)) // (no swing to speak of: a carrier; a signal
-      continue;                                               //  followed here keeps its end)
+    if (mid - tip < 0.5e6f) // (no swing to speak of: a carrier)
+      continue;
     const float th = tip + 0.2f * (mid - tip);
     const auto below = [&](size_t m) { return sgn * v[m] < th; };
     std::vector<double> c; // the pulses' centres (samples)
@@ -700,13 +737,17 @@ bool Finder::video_in(const std::vector<cf> &y, double fs, float prefer, VideoHi
     const float spread = median(levels) / (bl - t);
     if (spread > 0.25f)
       continue;
-    // the end with the better sync: on more of the lines, blanking steadier, at blanking's place
+    // the end with the better sync: on more of the lines, blanking steadier, at blanking's place; a
+    // signal followed here keeps its end unless the other has sync as good as sync gets (a bright detail
+    // lines up on fewer lines, with less steady levels after it: a first look that took one is mended)
     const float cover = static_cast<float>(N * line / static_cast<double>(v.size()));
+    if (prefer != 0 && sgn != prefer && (cover < 0.9f || spread > 0.1f))
+      continue;
     const float score = (1 - std::min(cover, 1.f)) + 2 * spread + std::abs((bl - t) / (far - t) - 0.3f) - (sgn == prefer ? 1.f : 0.f);
     if (!found || score < best_score) {
       found = true;
       best_score = score;
-      h = {0, 0, sgn, t, bl, line / fv, chain.size()};
+      h = {0, 0, sgn, t, bl, line / fv};
     }
   }
   if (!found)

@@ -747,7 +747,7 @@ json Engine::points(uint64_t id) {
 // (, sender, BSSID, network name, channel: 6 Mb/s frames decoded whole)]...],
 // "other":[[t, centre MHz, width MHz, kind (T Bluetooth, N narrowband, M microwave oven, E BLE
 // advertising, C steady carrier, A analog video), us (, E: address, random, name; C: null, null, null,
-// comb kHz; A: null, null, null, line rate kHz)]...],
+// comb kHz; A: null, null, null, line rate kHz, band low MHz, band high MHz)]...],
 // "dropped": banks skipped because this thread fell behind, "id0": the first frame's id (the others
 // count on; see points()), "kept0": the oldest frame whose points are still kept}.
 void Engine::wifi_loop() {
@@ -818,8 +818,9 @@ void Engine::wifi_loop() {
           e.push_back(o.name);
         } else if (o.kind == 'C') { // a steady carrier: the comb around it
           e.insert(e.end(), {nullptr, nullptr, nullptr, std::round(o.comb_khz * 10) / 10});
-        } else if (o.kind == 'A') { // analog video: its line rate (PAL/SECAM and NTSC are 0.11 kHz apart)
-          e.insert(e.end(), {nullptr, nullptr, nullptr, std::round(o.line_khz * 1000) / 1000});
+        } else if (o.kind == 'A') { // analog video: its line rate (PAL/SECAM and NTSC are 0.11 kHz apart), its band
+          e.insert(e.end(), {nullptr, nullptr, nullptr, std::round(o.line_khz * 1000) / 1000, std::round(o.lo_mhz * 10) / 10,
+                             std::round(o.hi_mhz * 10) / 10});
         }
         oth.push_back(e);
       }

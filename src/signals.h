@@ -32,6 +32,7 @@ struct Burst {
   char kind = 'N';
   double comb_khz = 0; // 'C': the spacing of evenly spaced lines around it (0: none)
   double line_khz = 0; // 'A': its line rate (15.625 kHz: 625 lines, PAL/SECAM; 15.734: 525, NTSC)
+  double lo_mhz = 0, hi_mhz = 0; // 'A': its band (sync tip to white, 7 MHz either side): nothing narrow in it is marked
   std::string addr;  // 'E': the advertiser's address (aa:bb:..., as shown by phones)
   bool random = false; // 'E': a random (often rotating) address rather than a public one
   std::string name;  // 'E': its name, if it sends one (UTF-8 checked)
@@ -84,7 +85,6 @@ private:
     double band = 0;                 // the sub-band's centre it was found in (Hz from the centre)
     float sgn = 1, tip = 0, blank = 0; // where its sync is (sgn: 1 the low end, -1 the high end), Hz from hz
     double line = 0;                 // line period (s)
-    size_t pulses = 0;
   };
   // one sub-band's samples (complex, fs): a video signal in it, if any (hz relative to its own centre)
   // (prefer: the end its sync is at when a signal there is already followed, else 0)
@@ -94,6 +94,7 @@ private:
     double lo, hi;                   // its band (Hz): narrow bursts and steady carriers in it are its own ...
     double until;                    // ... until then (s; held a while: a miss does not let them through)
     float sgn;                       // its sync's end
+    int looks;                       // the looks it was found in (its frequency: their mean, the last 10 or so)
   };
   std::vector<Video> _videos;
   bool in_video(double t, double hz) const {
@@ -102,9 +103,15 @@ private:
         return true;
     return false;
   }
-  uint64_t _vid_due = 0;             // the column to look in next (0: none)
+  static constexpr uint64_t kNever = ~0ull;
+  uint64_t _vid_due = kNever;        // the column to look in next (once a window)
+  uint64_t _vid_soon = kNever;       // ... or sooner: narrow bursts close together (parts of one that just came on?)
+  uint64_t _vid_quiet = 0;           // (no such early look before this column)
+  double _nb_t0 = 0, _nb_lo = 0, _nb_hi = 0; // narrow bursts reported since then (s), over this range (MHz)
+  int _nb_n = 0;
   uint32_t _vid_rng = 1;             // (a fixed sequence: tests are repeatable)
   std::vector<float> _halfband;      // 40 MS/s -> 20 MS/s sub-bands
+  std::vector<cf> _vy;               // a sub-band's samples
   double time_of(uint64_t sample) const { return _t_end - static_cast<double>(_abs_end - sample) / _fs; }
   double bin_hz(double k) const { return _centre + (k - 0.5 * _nf) * _fs / _nf; }
 

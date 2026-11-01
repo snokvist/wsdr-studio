@@ -41,7 +41,10 @@ item (below).
 With **Mark signals** on (Single and Compare, continuous 20 and 40 MHz spans), the signal finder
 (`src/signals.cpp`, `Finder::video`) looks for analog video once its warm-up ends (~13 ms after a start
 or retune). It then looks once per 200 ms window, at a pseudo-random point within the following 20 ms
-(a field), so successive looks fall on different parts of the picture.
+(a field), so successive looks fall on different parts of the picture. It also looks at once when five
+or more narrow bursts end within 50 ms and 16 MHz (at most once per 100 ms). Those are likely the parts
+of a video signal that has just come on, or that the last look missed. Bluetooth hopping across the
+span does not trigger it.
 
 1. **The stretch.** The last 0.8-2 ms of samples, with their mean taken off (the adapter's DC spike;
    an FM carrier averages out).
@@ -64,13 +67,15 @@ or retune). It then looks once per 200 ms window, at a pseudo-random point withi
      lines up from line to line, but what follows it varies).
 5. **Polarity.** If both ends qualify, the end is chosen by line coverage, steadier blanking and how
    close blanking sits to 30% of the way from tip to white. A transmitter already being followed keeps
-   its end.
+   its end, unless the other end shows sync at its best: on 90% or more of the lines, with blanking
+   within 10% of the sync depth. So a first look that took a bright detail for sync is mended.
 6. **Duplicates.** A signal found in two sub-bands (the same sync tip, or within 8 MHz) is taken from
    the one it is nearest the middle of.
 7. **Reported.**
    - The **line rate**: 15.625 kHz is 625 lines (PAL/SECAM); 15.734 kHz is 525 lines (NTSC).
    - The **mean frequency**: the demodulated samples' mean, over samples at the signal's own power
-     (another signal raises it). It is averaged over the looks it is followed for.
+     (another signal raises it). It is the mean of the looks so far, then of about the last 10, so an
+     early look on the vertical interval or a bright sky does not dominate.
    - The **deviation**: 3.4 × the sync depth (tip to blanking). In both standards white is that far
      from the sync tip, so the figure does not depend on the picture.
 8. **Its band** runs from the sync tip to white, ±7 MHz: about the occupied band by Carson's rule,
@@ -81,14 +86,24 @@ or retune). It then looks once per 200 ms window, at a pseudo-random point withi
    picture and its sound subcarrier make about 150 "narrowband" marks a second.
 
 The hover reads, e.g., *analog video, FM (NTSC, 525 lines) · ≈5806 MHz, FPV R5 5806 or A4 5805 ·
-deviation 8 MHz p-p*. Channel names (`web/src/fpv.ts`) are the analog FPV channels within 3 MHz: a
-guide, not a match (below).
+deviation 8 MHz p-p*. It shows anywhere over the signal's band (the engine sends the band's edges), so
+the hidden part is explained too. It describes the transmitter nearest the pointer when two transmitters'
+marks meet. Channel names (`web/src/fpv.ts`) are the analog FPV channels within 3 MHz: a guide, not a
+match (below).
 
 ### Measured
 
 **Unit tests** (`tests/test_core.cpp`, `test_video`) are 0.25 s each: the warm-up look and one window's.
 Every case must be found at every look, with the right line rate, within 1.5 MHz of the true mean, and
-with the deviation within 15% where checked. Nothing else may be reported.
+with the deviation within 15% where checked. Nothing else may be reported. `test_video_follow` runs
+3.75 s at 20 MS/s: noise, then PAL (sync high, a white bar) for 1.2 s, then narrow bursts inside its
+band. It checks that:
+- the video is found as soon as it comes on (the early look), with no narrow marks before;
+- every look takes the right end;
+- the frequency settles within 1 MHz (5801.6 for 5801);
+- the band holds the bursts back for 2 s after the last look, then lets them through.
+
+The whole C++ suite takes about 32 s (15 s before this work).
 
 | Case | Frequency | Deviation (true) |
 |---|---|---|
@@ -125,7 +140,8 @@ decoder cannot hold a frame. So the mark appears about where the picture breaks 
 is gone. Below that, the old flood of narrowband marks returns, smaller than before.
 
 **Cost:** each look takes about 4.3 ms at 40 MS/s (three sub-bands) and 1 ms at 20 MS/s. That is about
-2.5% of a core at 40 MS/s.
+2.5% of a core at 40 MS/s, and up to ~4% more while narrow bursts keep crowding in (the early looks,
+at most 10 a second).
 
 **Seen on the way, not changed:** with an FPV transmitter as strong as busy Wi-Fi on the next channel,
 the video's sidebands at the channel's edge cost the Wi-Fi frame finder most frames (3 decoded in
@@ -140,13 +156,16 @@ the video's sidebands at the channel's edge cost the Wi-Fi frame finder most fra
   pre-emphasis it reads the low frequencies' deviation, a fraction of the nominal. Real transmitters'
   deviation, pre-emphasis and sound subcarrier (6.0 or 6.5 MHz) are assumptions until measured.
 - **Polarity.** A bright vertical bar in the picture can still be taken for sync on the first look if
-  it lines up on more lines, with steadier levels after it, than the sync does. That is unlikely but
-  possible, and the end chosen first is then kept while the signal is followed.
+  it lines up on more lines, with steadier levels after it, than the sync does. That is unlikely, and a
+  later look whose sync is on 90% of the lines with steady blanking mends it.
 - **Missed signals.** Two transmitters closer than ~20 MHz: the stronger takes the sub-band. A signal
   overlapping strong Wi-Fi on the same frequencies can be missed while the Wi-Fi is on; the 2 s hold
   bridges short misses.
 - **Hidden marks.** Narrow bursts and steady carriers inside a found video signal's band are not marked
-  (Bluetooth beside a 2.4 GHz video sender, a display harmonic under an FPV channel).
+  (Bluetooth beside a 2.4 GHz video sender, a display harmonic under an FPV channel). Bluetooth's hops
+  inside the band also do not count toward telling it hops. Counting them would make the video's own
+  fragments look like hopping. So when little of the span lies outside the band, Bluetooth there may
+  be marked "narrowband" rather than "Bluetooth".
 - **Spans.** Continuous 20/40 MS/s spans only (the Mark signals rule), so in practice the 8812BU on
   USB 3.
 - **No picture.** The picture is not decoded (below).
