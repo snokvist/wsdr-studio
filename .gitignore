@@ -3,3 +3,4 @@ build*/
 *.sigmf-data
 .cache/
 compile_commands.json
+__pycache__/
