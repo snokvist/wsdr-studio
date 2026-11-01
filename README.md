@@ -167,6 +167,8 @@ The window needs at least 1280 × 720.
   them, and anything else there is under it. The picture itself is not decoded (see
   [docs/FPV.md](docs/FPV.md)). These are cheap rules, close enough to tag what the waterfall shows;
   signals at the very edge of the span are missed.
+  Analog video is only marked when its carrier is within about ±13 MHz of the centre at 40 MS/s, or
+  ±5 MHz at 20 MS/s: tune closer to it.
 - **Frame inspector** (click a Wi-Fi mark): that frame's equalised subcarriers as a constellation:
   L-SIG, the HT/VHT signal field, and the payload's first 32 symbols, with the EVM, the SNR and the
   sender's carrier offset (kHz, ppm; both crystals' errors), plus the sender and network when the

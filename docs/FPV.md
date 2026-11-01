@@ -161,6 +161,12 @@ the video's sidebands at the channel's edge cost the Wi-Fi frame finder most fra
 - **Missed signals.** Two transmitters closer than ~20 MHz: the stronger takes the sub-band. A signal
   overlapping strong Wi-Fi on the same frequencies can be missed while the Wi-Fi is on; the 2 s hold
   bridges short misses.
+- **Span edges.** The sync tip must be inside the adapter's passband. So a signal is only marked when
+  its carrier is within about ±13 MHz of the centre at 40 MS/s, and about ±5 MHz at 20 MS/s, on the
+  side its sync is on. On the other side the limits are about ±15 and ±7 MHz. These were measured on
+  simulated signals at 20 dB CNR (2026-11-01). Further out the signal is not marked, and its parts
+  show as narrowband marks and steady carriers, as before this mark existed: about 100–200 a second.
+  Tune closer to it.
 - **Hidden marks.** Narrow bursts and steady carriers inside a found video signal's band are not marked
   (Bluetooth beside a 2.4 GHz video sender, a display harmonic under an FPV channel). Bluetooth's hops
   inside the band also do not count toward telling it hops. Counting them would make the video's own
