@@ -40,11 +40,13 @@ export type FramePoints = {
   skip?: number; mcs?: number; nss?: number; width?: number; sgi?: boolean; ldpc?: boolean; stbc?: boolean;
 };
 // Another signal found in the samples (the "wifi" event's "other"): start (s), centre (MHz), width
-// (MHz), kind (T Bluetooth, N narrowband, M microwave oven, E BLE advertising, C steady carrier),
-// duration (us); a decoded BLE advertisement adds its sender's address, whether it is random, and its
-// name ("" none); a steady carrier the spacing of the comb around it (kHz, 0 none).
-export type OtherSignal = [t: number, mhz: number, bw: number, kind: 'T' | 'N' | 'M' | 'E' | 'C', us: number,
-  addr?: string | null, random?: boolean | null, name?: string | null, comb?: number];
+// (MHz), kind (T Bluetooth, N narrowband, M microwave oven, E BLE advertising, C steady carrier, A analog
+// video), duration (us); a decoded BLE advertisement adds its sender's address, whether it is random,
+// and its name ("" none); a steady carrier the spacing of the comb around it (kHz, 0 none); analog
+// video (FM: its mean frequency, its width the deviation from sync tip to white) its line rate (kHz)
+// and its band (MHz: sync tip to white, 7 MHz either side; nothing narrow in it is marked).
+export type OtherSignal = [t: number, mhz: number, bw: number, kind: 'T' | 'N' | 'M' | 'E' | 'C' | 'A', us: number,
+  addr?: string | null, random?: boolean | null, name?: string | null, comb?: number, lo?: number, hi?: number];
 export type Status = {
   state: string; adapter: string; error: string; t: number; rows: number; ring_dropped: number; dsp_load: number;
   rx?: { state: string; banks: number; restarts: number; channel: number; width: number; centre: number; fs: number; gapped?: boolean; error: string;

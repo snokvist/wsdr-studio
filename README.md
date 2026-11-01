@@ -156,8 +156,19 @@ The window needs at least 1280 × 720.
   A narrow line that stays on is a "steady carrier"; when evenly spaced lines around it repeat at a
   video line rate (67.5 kHz for 1080p60, ...) the hover says it is most likely a display's clock
   harmonic (an HDMI/DisplayPort cable, a monitor or a GPU nearby: they show up as a ladder of such
-  lines across 5 GHz). These are cheap rules, close enough to tag what the waterfall shows; signals at
-  the very edge of the span are missed.
+  lines across 5 GHz).
+  Analog video sent as FM (an analog FPV drone's camera transmitter at 5.8 GHz, a 2.4 GHz video
+  sender) is found by its line sync after FM demodulation, about five times a second, beside Wi-Fi
+  too, and two at once when they are 20 MHz apart. The hover, anywhere over its band, names its standard from the line rate
+  (PAL/SECAM 625 lines or NTSC 525), its mean frequency (≈: the picture can shift it by a MHz or so)
+  with the FPV channels near it (bands A, B, E, F, R, L), and its deviation (sync tip to white). It
+  is found down to about where its picture breaks up into sparklies. Narrow bursts and steady
+  carriers inside its band (its swing and 7 MHz either side) are not marked: its own carrier makes
+  them, and anything else there is under it. The picture itself is not decoded (see
+  [docs/FPV.md](docs/FPV.md)). These are cheap rules, close enough to tag what the waterfall shows;
+  signals at the very edge of the span are missed.
+  Analog video is only marked when its carrier is within about ±13 MHz of the centre at 40 MS/s, or
+  ±5 MHz at 20 MS/s: tune closer to it.
 - **Frame inspector** (click a Wi-Fi mark): that frame's equalised subcarriers as a constellation:
   L-SIG, the HT/VHT signal field, and the payload's first 32 symbols, with the EVM, the SNR and the
   sender's carrier offset (kHz, ppm; both crystals' errors), plus the sender and network when the
@@ -212,6 +223,8 @@ build/test_core                        # unit tests (no hardware); build/test_co
 (cd web && npm test)                   # the UI's unit tests (band axis, sweep plans, survey; Node 24)
 node tests/e2e.mjs [--record]          # against the running app, view A open
 node tests/e2e-dual.mjs                # view B (a second 8812BU); B is put back as it was
+scripts/fpv_sim.py make --out /tmp/fpv   # a simulated analog FPV recording (SigMF; docs/FPV.md)
+build/test_core --wifi /tmp/fpv.sigmf-data   # the signal finder over a recording: "A 5806 MHz line 15.73 kHz"
 ```
 
 **Desktop shell (dev):** `cd desktop && npm ci && npm start` runs Electron on `build/wsdr-studiod`
@@ -250,7 +263,8 @@ The backend listens on 127.0.0.1 only and checks every request's `Host` header a
 | `web/` | React + TypeScript UI (Vite): `App.tsx` shell (modes, sidebar, links), `Station.tsx` one view, `display.ts` spectrum + waterfall (also the stitched Panorama) and the signal marks, `Panorama.tsx`, `Constellation.tsx` the frame inspector, `BandRuler.tsx` + `bands.ts` + `channels.ts` the channel axis, `survey.ts` its per-channel survey, `SpectralMap.tsx` the sweep, `hub.ts` the shared socket |
 | `desktop/` | Electron shell: `main.js` (starts the backend, window, lock-down; `backend.log` and `prefs.json` in `~/.config/wsdr-studio`), `preload.js` (token and preferences bridge) |
 | `external/wifi-sdr` | the receive core (submodule; brings devourer) |
-| `docs/` | design and build plan |
+| `docs/` | design and build plan; `FPV.md`: analog FPV video (what the adapters can do, the analog video mark, a decoder plan) |
+| `scripts/` | `build-appimage.sh` (the AppImage); `fpv_sim.py` (simulated analog FPV recordings, and a reference decoder for them) |
 | `tests/` | unit tests (C++), the end-to-end checks against a running app (`e2e.mjs` view A, `e2e-dual.mjs` view B); `web/tests` the UI's unit tests (`npm test`) |
 
 License: GPL-2.0-only (it links wifi-sdr and devourer, both GPL-2.0).

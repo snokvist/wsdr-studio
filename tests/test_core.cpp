@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // Unit tests without hardware, plus `--bench`: the DSP at 40 MS/s on synthetic banks, and
 // `--wifi <recording.sigmf-data>`: the Wi-Fi frame finder over a recording, summarised.
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <complex>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <random>
 #include <cmath>
@@ -1128,8 +1130,10 @@ static void test_signals() {
     for (const auto *o : {&o40, &o20}) {
       int c = 0, clean = 0, wrong = 0;
       for (const auto &b : *o) {
-        if (b.kind != 'C')
+        if (b.kind != 'C') {
+          wrong += b.kind == 'A'; // (a carrier switched at a display's line rate is no analog video)
           continue;
+        }
         if (std::abs(b.mhz - 5773.1) < 0.01 && std::abs(b.comb_khz - 67.5) < 1)
           c++;
         else if (std::abs(b.mhz - 5778.3) < 0.01 && b.comb_khz == 0)
@@ -1160,6 +1164,329 @@ static void test_signals() {
     CHECK(got.empty());
     if (!got.empty())
       std::printf("  (Wi-Fi: %zu bursts, first '%c' %.1f MHz %.0f us)\n", got.size(), got[0].kind, got[0].mhz, got[0].dur_us);
+  }
+}
+
+// Composite video (PAL 625/50 or NTSC 525/59.94), as a camera's output: a continuous line grid, the
+// vertical interval (equalising, broad and equalising half-line pulses; the second field's starts
+// mid-line, interlaced), the colour burst, a picture (a bright sky over textured ground, moving; with
+// `bar` a white vertical bar 5 us wide, as a pole would make), video filtered to ~5 MHz, a 6.5 MHz sound
+// subcarrier; in volts (sync -0.3, blanking 0, white 0.7). Optionally pre-emphasised (a one-pole shelf:
+// `pre_lo` below `pre_fc`, `pre_hi` well above). FM as a transmitter sends it: `dev_pp` Hz from sync tip
+// to white, sync at the low end (sgn 1) or the high end (-1), the long-term mean frequency at `off_hz`
+// from the centre, amplitude `amp`; complex noise at `cnr_db` in 20 MHz (relative to amplitude 1).
+struct FmVideo {
+  bool ntsc;
+  double fs, off_hz, dev_pp;
+  float sgn;
+  float sigma;
+  bool bar = false;
+  double pre_lo = 1, pre_hi = 1, pre_fc = 1e6, lp = 0;
+  float amp = 1;
+  std::vector<float> noise; // (Gaussian, drawn once: the samples are many)
+  std::complex<double> snd{1, 0}, step; // the sound subcarrier's phasor
+  double L, mean = 0, ph = 0;
+  uint64_t i = 0;
+  std::vector<float> box; // the video filter's last samples
+  size_t bi = 0;
+  float bsum = 0;
+  FmVideo(bool ntsc_, double fs_, double off, double dev, float s, double cnr_db, bool bar_ = false)
+      : ntsc(ntsc_), fs(fs_), off_hz(off), dev_pp(dev), sgn(s), sigma(static_cast<float>(std::sqrt(std::pow(10, -cnr_db / 10) * fs_ / 40e6))),
+        bar(bar_), step(std::polar(1.0, 2 * M_PI * 6.5e6 / fs_)), L(ntsc_ ? 1 / 15734.264 : 64e-6), box(static_cast<size_t>(std::lround(fs_ / 5e6)), 0.f) {
+    std::mt19937 rng(11);
+    std::normal_distribution<float> g(0, 1);
+    noise.resize(1 << 20);
+    for (auto &v : noise)
+      v = sigma * g(rng);
+    for (int k = 0; k < (ntsc ? 525 : 625) * 64; k++) // (its mean over a frame: the transmitter's PLL holds that)
+      mean += level(k * L / 64);
+    mean /= (ntsc ? 525 : 625) * 64;
+  }
+  double level(double t) const {
+    const int lines = ntsc ? 525 : 625, vbi = ntsc ? 18 : 15, first = ntsc ? 21 : 23;
+    const double h = L / 2, eq = ntsc ? 2.3e-6 : 2.35e-6;
+    const auto hh = static_cast<long>(std::floor(t / h));
+    const double th = t - static_cast<double>(hh) * h;
+    const long k = hh % (2 * lines), f2 = k >= lines, fk = k - f2 * lines; // the field's own half-line
+    if (fk < vbi / 3 || (fk >= 2 * vbi / 3 && fk < vbi))
+      return th < eq ? -0.3 : 0;
+    if (fk < 2 * vbi / 3)
+      return th < h - 4.7e-6 ? -0.3 : 0; // broad pulses, serrated
+    const auto ln = static_cast<long>(std::floor(t / L));
+    const double tau = t - static_cast<double>(ln) * L;
+    const long fl = (ln % lines) - (f2 ? lines / 2 : 0); // the field's own line
+    const double a0 = ntsc ? 9.4e-6 : 10.5e-6, a1 = L - (ntsc ? 1.5e-6 : 1.65e-6);
+    if (tau < 4.7e-6)
+      return -0.3;
+    if (tau < a0) // the back porch, with the burst
+      return tau > 5.6e-6 && tau < 7.9e-6 ? 0.15 * std::sin(2 * M_PI * (ntsc ? 3.579545e6 : 4.43361875e6) * t) : 0;
+    if (tau >= a1 || fl < first || fl >= lines / 2 - 2)
+      return 0;
+    const double y = static_cast<double>(fl - first) / (lines / 2 - 2 - first), x = (tau - a0) / (a1 - a0);
+    const double frame = std::floor(t / (lines * L));
+    double lum = y < 0.45 ? 0.95 - 0.4 * y : 0.3 + 0.25 * std::sin(40 * x + 9 * y + 0.3 * frame) * std::sin(23 * y);
+    if (bar && tau >= a0 + 0.45 * (a1 - a0) && tau < a0 + 0.45 * (a1 - a0) + 5e-6)
+      lum = 1;
+    const double black = ntsc ? 0.054 : 0;
+    return black + (0.7 - black) * std::clamp(lum, 0.0, 1.0);
+  }
+  void fill(std::complex<float> *x, size_t n) {
+    const double a = 1 - std::exp(-2 * M_PI * pre_fc / fs);
+    for (size_t j = 0; j < n; j++, i++) {
+      const double t = static_cast<double>(i) / fs;
+      const auto lv = static_cast<float>(level(t));
+      bsum += lv - box[bi];
+      box[bi] = lv;
+      bi = (bi + 1) % box.size();
+      snd *= step;
+      const double v0 = bsum / static_cast<double>(box.size());
+      lp += a * (v0 - lp);
+      const double v = pre_lo * (lp - mean) + pre_hi * (v0 - lp) + 0.07 * snd.imag();
+      ph = std::remainder(ph + 2 * M_PI * (off_hz + sgn * dev_pp * v) / fs, 2 * M_PI);
+      const size_t k = (2 * i * 7919) & (noise.size() - 1); // (a stride through the table, not its period)
+      x[j] = std::polar(amp, static_cast<float>(ph)) + std::complex<float>(noise[k], noise[(k + 1) & (noise.size() - 1)]);
+    }
+  }
+};
+
+// Wi-Fi traffic on one channel (6 Mb/s frames of 44-160 us, 20-60 us apart: ~70% of the time on the
+// air), at amplitude `amp` while on, added in place (24 frames made once, sent in a random order)
+struct WifiTraffic {
+  double off_hz;
+  float amp;
+  std::mt19937 rng{21};
+  std::vector<std::vector<std::complex<float>>> pool;
+  const std::vector<std::complex<float>> *cur = nullptr;
+  size_t at = 0, len = 0;
+  void add(std::complex<float> *x, size_t n) {
+    if (pool.empty())
+      for (int k = 0; k < 24; k++) {
+        auto fr = ofdm_frame(0b1101, 100, off_hz, false, 6 + static_cast<int>(rng() % 30), rng);
+        double p = 0;
+        for (const auto &v : fr)
+          p += std::norm(v);
+        for (auto &v : fr)
+          v *= static_cast<float>(amp / std::sqrt(p / static_cast<double>(fr.size())));
+        pool.push_back(std::move(fr));
+      }
+    for (size_t j = 0; j < n; j++, at++) {
+      if (at >= len) {
+        cur = &pool[rng() % pool.size()];
+        len = cur->size() + 800 + rng() % 1600;
+        at = 0;
+      }
+      if (at < cur->size())
+        x[j] += (*cur)[at];
+    }
+  }
+};
+
+// Analog video, FM, through the finder (and with wifi_too the Wi-Fi decoder) for `secs`: 0.25 s holds
+// the warm-up's look, then one window's. `fill` makes the samples.
+struct VideoRun {
+  std::vector<sig::Burst> out;
+  size_t frames = 0;
+};
+static VideoRun video_run(double fs, double centre, double secs, const std::function<void(std::complex<float> *, size_t)> &fill,
+                          bool wifi_too = false) {
+  VideoRun r;
+  sig::Finder f;
+  f.reset(fs, centre);
+  wifi::Decoder dec;
+  dec.reset(fs, centre);
+  std::vector<std::complex<float>> x(8192);
+  std::vector<wifi::Frame> frames;
+  for (uint64_t done = 0; done < static_cast<uint64_t>(secs * fs); done += x.size()) {
+    fill(x.data(), x.size());
+    f.feed(x.data(), x.size(), static_cast<double>(done + x.size()) / fs, r.out);
+    if (wifi_too)
+      dec.feed(x.data(), x.size(), static_cast<double>(done + x.size()) / fs, frames);
+  }
+  r.frames = frames.size();
+  return r;
+}
+
+// Analog video, FM: found at every look with its line rate, its frequency within 1.5 MHz and its
+// deviation within 15%; nothing else reported in it (its carrier rests at the sync and blanking levels,
+// its sound subcarrier makes lines: no narrow bursts or steady carriers of their own), and no Wi-Fi
+// frames in it. PAL and NTSC, either sync polarity, at 40 and 20 MS/s; with a white bar in the picture
+// (a chain of pulses at the other end: the deviation shows the right end was taken); over the adapter's
+// DC; beside busy Wi-Fi as strong and 6 dB stronger on the next channel (at 5.8 GHz they share UNII-3);
+// two transmitters 20 MHz apart; pre-emphasised (found; its deviation reads the low frequencies').
+// Not video: a carrier keyed on and off at 15.625 kHz with sync's duty over a weaker steady one (its
+// demodulated frequency looks like sync on a black picture: its power does not), nor noise.
+static void test_video() {
+  struct Want {
+    double mhz, line, dev; // dev 0: not checked
+  };
+  // (frames: the Wi-Fi frames decoded at least, or -1: no frames)
+  const auto check = [](const char *what, const VideoRun &r, const std::vector<Want> &want, size_t looks, long frames = -1) {
+    std::vector<size_t> ok(want.size());
+    size_t other = 0;
+    for (const auto &b : r.out) {
+      bool hit = false;
+      for (size_t i = 0; i < want.size() && !hit; i++)
+        if (b.kind == 'A' && std::abs(b.line_khz - want[i].line) < 0.02 && std::abs(b.mhz - want[i].mhz) < 1.5 &&
+            (want[i].dev == 0 || std::abs(b.bw_mhz - want[i].dev) < 0.15 * want[i].dev)) {
+          ok[i]++;
+          hit = true;
+        }
+      other += !hit;
+    }
+    const bool good = std::all_of(ok.begin(), ok.end(), [&](size_t k) { return k == looks; }) && other == 0 &&
+                      (frames < 0 ? r.frames == 0 : r.frames >= static_cast<size_t>(frames));
+    CHECK(good);
+    if (!good || std::getenv("TEST_VERBOSE")) {
+      std::printf("  (video %s: %zu marks, %zu other, %zu Wi-Fi frames)\n", what, r.out.size(), other, r.frames);
+      for (const auto &b : r.out)
+        std::printf("    %c %.2f MHz bw %.2f line %.3f kHz t %.4f\n", b.kind, b.mhz, b.bw_mhz, b.line_khz, b.t);
+    }
+  };
+  const double PAL = 15.625, NTSC = 15.734;
+  struct Case {
+    const char *what;
+    bool ntsc;
+    double fs, off, dev;
+    float sgn;
+    double cnr;
+    bool bar;
+    float dc;
+    bool wifi; // (the Wi-Fi decoder too: it finds no frames in it)
+  };
+  for (const Case c : {Case{"PAL 40", false, 40e6, 6e6, 8e6, 1, 15, false, 0, true}, Case{"NTSC 40", true, 40e6, -2e6, 6e6, -1, 12, false, 0, false},
+                       Case{"NTSC 20", true, 20e6, 1e6, 8e6, 1, 15, false, 0, true}, Case{"PAL 20", false, 20e6, 0, 10e6, -1, 12, false, 0, false},
+                       Case{"PAL 40 sync high, a white bar", false, 40e6, 3e6, 8e6, -1, 15, true, 0, false},
+                       Case{"PAL 40 sync low, a white bar", false, 40e6, 3e6, 8e6, 1, 15, true, 0, false},
+                       Case{"NTSC 40 over DC 0.6", true, 40e6, 2e6, 8e6, 1, 15, false, 0.6f, false},
+                       Case{"NTSC 40 over DC 1.0", true, 40e6, 2e6, 8e6, 1, 15, false, 1.0f, false}}) {
+    FmVideo gen(c.ntsc, c.fs, c.off, c.dev, c.sgn, c.cnr, c.bar);
+    const auto r = video_run(c.fs, 5800e6, 0.25, [&](std::complex<float> *x, size_t n) {
+      gen.fill(x, n);
+      for (size_t j = 0; j < n; j++)
+        x[j] += c.dc;
+    }, c.wifi);
+    check(c.what, r, {{5800 + c.off / 1e6, c.ntsc ? NTSC : PAL, c.dev / 1e6}}, 2);
+  }
+  { // pre-emphasised: -11 dB under 0.3 MHz, +3 dB well over it (a one-pole shelf, as CCIR 405's)
+    FmVideo gen(true, 40e6, 4e6, 8e6, 1, 15);
+    gen.pre_lo = 0.28;
+    gen.pre_hi = 1.41;
+    gen.pre_fc = 0.3e6;
+    check("NTSC 40 pre-emphasised", video_run(40e6, 5800e6, 0.25, [&](std::complex<float> *x, size_t n) { gen.fill(x, n); }),
+          {{5804, NTSC, 0}}, 2);
+  }
+  // beside Wi-Fi: tuned to 5795 MHz (channels 157 + 161), PAL on R5 (5806 MHz), busy Wi-Fi on channel
+  // 157 (5785 MHz) as strong, and 6 dB stronger (then its frames are decoded too; as strong, the video's
+  // sidebands at the channel's edge cost the Wi-Fi decoder most of them)
+  for (const float w : {1.f, 2.f}) {
+    FmVideo gen(false, 40e6, 11e6, 8e6, 1, 15);
+    WifiTraffic wifi{-10e6, w};
+    check(w > 1 ? "beside Wi-Fi 6 dB stronger" : "beside Wi-Fi as strong", video_run(40e6, 5795e6, 0.25, [&](std::complex<float> *x, size_t n) {
+            gen.fill(x, n);
+            wifi.add(x, n);
+          }, true),
+          {{5806, PAL, 8}}, 2, w > 1 ? 300 : 0);
+  }
+  { // two transmitters: PAL at 5810 MHz, NTSC 6 dB weaker at 5790 (tuned to 5800)
+    FmVideo a(false, 40e6, 10e6, 8e6, 1, 15), b(true, 40e6, -10e6, 8e6, -1, 200);
+    b.amp = 0.5f;
+    std::vector<std::complex<float>> t(8192);
+    check("two transmitters", video_run(40e6, 5800e6, 0.25, [&](std::complex<float> *x, size_t n) {
+            a.fill(x, n);
+            b.fill(t.data(), n);
+            for (size_t j = 0; j < n; j++)
+              x[j] += t[j];
+          }),
+          {{5810, PAL, 8}, {5790, NTSC, 8}}, 2);
+  }
+  // not video: a carrier keyed at 15.625 kHz, on 4.7 us of each 64 (sync's duty), over a weaker steady
+  // one; then noise alone
+  {
+    std::mt19937 rng(3);
+    std::normal_distribution<float> g(0, 1);
+    double ph = 0, ph2 = 0;
+    uint64_t i = 0;
+    check("keyed carrier", video_run(40e6, 5800e6, 0.25, [&](std::complex<float> *x, size_t n) {
+            for (size_t j = 0; j < n; j++, i++) {
+              ph = std::remainder(ph + 2 * M_PI * 5e6 / 40e6, 2 * M_PI);
+              ph2 = std::remainder(ph2 + 2 * M_PI * 1e6 / 40e6, 2 * M_PI);
+              const bool on = std::fmod(static_cast<double>(i) / 40e6, 64e-6) < 4.7e-6;
+              x[j] = (on ? std::polar(1.f, static_cast<float>(ph)) : std::complex<float>(0)) + std::polar(0.3f, static_cast<float>(ph2)) +
+                     std::complex<float>(0.02f * g(rng), 0.02f * g(rng));
+            }
+          }),
+          {}, 0);
+    check("noise", video_run(40e6, 5800e6, 0.25, [&](std::complex<float> *x, size_t n) {
+            for (size_t j = 0; j < n; j++)
+              x[j] = {0.05f * g(rng), 0.05f * g(rng)};
+          }),
+          {}, 0);
+  }
+}
+
+// Analog video followed over time (20 MS/s, tuned to 5800 MHz): noise for 0.25 s; then PAL on 5801
+// MHz (sync high, a white bar in the picture) for 1.2 s; then gone, and narrow bursts (366 us every 5 ms)
+// at 5801 MHz, inside its band, for 2.3 s. It is found soon after it comes on (its first parts, narrow
+// bursts close together, bring a look forward), with few narrow marks before; every look takes the
+// right end (the deviation shows it) and the averaged frequency settles (within 1 MHz; each mark within
+// 2.5 MHz: a look on the vertical interval reads ~2 MHz off); its band is held 2 s after the last look
+// found it (no narrow marks), then let go (the bursts are marked).
+static void test_video_follow() {
+  const double fs = 20e6;
+  sig::Finder f;
+  f.reset(fs, 5800e6);
+  FmVideo gen(false, fs, 1e6, 8e6, -1, 15, true);
+  std::mt19937 rng(7);
+  std::uniform_int_distribution<int> bit(0, 1);
+  const std::vector<float> &nz = gen.noise; // (its noise table, at its CNR)
+  std::vector<std::complex<float>> x(8192);
+  std::vector<sig::Burst> out;
+  double ph = 0;
+  int b = 0;
+  for (uint64_t i = 0; i < static_cast<uint64_t>(3.75 * fs); i += x.size()) {
+    const double t0 = static_cast<double>(i) / fs;
+    if (t0 >= 0.25 && t0 < 1.45) {
+      gen.fill(x.data(), x.size());
+    } else {
+      for (size_t j = 0; j < x.size(); j++) {
+        const uint64_t k = i + j;
+        x[j] = {nz[(2 * k * 7919) & (nz.size() - 1)], nz[(2 * k * 7919 + 1) & (nz.size() - 1)]};
+        if (t0 >= 1.45 && (k % 100000) < 7320) { // 366 us of every 5 ms, GFSK-like at +1 MHz
+          if (k % 20 == 0)
+            b = bit(rng);
+          ph = std::remainder(ph + 2 * M_PI * (1e6 + (b ? 250e3 : -250e3)) / fs, 2 * M_PI);
+          x[j] += std::polar(0.3f, static_cast<float>(ph));
+        }
+      }
+    }
+    f.feed(x.data(), x.size(), static_cast<double>(i + x.size()) / fs, out);
+  }
+  double first = 1e9;
+  int marks = 0, right = 0, before = 0, held = 0, after = 0;
+  double last_mhz = 0;
+  for (const auto &m : out)
+    if (m.kind == 'A') {
+      first = std::min(first, m.t);
+      marks++;
+      right += std::abs(m.line_khz - 15.625) < 0.02 && std::abs(m.bw_mhz - 8) < 1.2 && std::abs(m.mhz - 5801) < 2.5;
+      last_mhz = m.mhz;
+    }
+  for (const auto &m : out) {
+    if (m.kind == 'A')
+      continue;
+    before += m.t < first;
+    held += m.t > 1.5 && m.t < 3.3;
+    after += m.t > 3.5;
+  }
+  const bool good = first < 0.32 && before <= 10 && marks >= 7 && right == marks && std::abs(last_mhz - 5801) < 1.0 && held == 0 && after >= 10;
+  CHECK(good);
+  if (!good || std::getenv("TEST_VERBOSE"))
+  {
+    std::printf("  (video followed: first at %.3f s, %d narrow before; %d marks, %d right, last %.2f MHz; %d narrow while held, %d after)\n",
+                first, before, marks, right, last_mhz, held, after);
+    for (const auto &m : out)
+      if (m.kind == 'A')
+        std::printf("    A %.2f MHz bw %.2f line %.3f kHz t %.4f us %.0f\n", m.mhz, m.bw_mhz, m.line_khz, m.t, m.dur_us);
   }
 }
 
@@ -1317,6 +1644,8 @@ static int wifi_scan(const char *path) {
     std::snprintf(k, sizeof k, "%c %.0f MHz %s%s%s", o.kind, o.mhz, o.addr.c_str(), o.random ? " (random)" : "", o.name.empty() ? "" : (" " + o.name).c_str());
     if (o.kind == 'C')
       std::snprintf(k, sizeof k, "C %.3f MHz comb %.1f kHz", o.mhz, o.comb_khz);
+    if (o.kind == 'A') // (in 1 MHz and 0.01 kHz steps: one transmitter, one key)
+      std::snprintf(k, sizeof k, "A %.0f MHz line %.2f kHz dev %.0f MHz", o.mhz, o.line_khz, o.bw_mhz);
     kinds[k]++;
   }
   std::printf("other signals (found in %.2f s): %zu\n", ssecs, other.size());
@@ -1385,6 +1714,8 @@ int main(int argc, char **argv) {
   test_ssid_text();
   test_dsss_beacon();
   test_signals();
+  test_video();
+  test_video_follow();
   test_ble();
   std::printf(g_fail ? "%d FAILED\n" : "all tests passed\n", g_fail);
   return g_fail ? 1 : 0;
