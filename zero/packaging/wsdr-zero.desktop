@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=WSDR Zero
+Exec=/usr/share/APPLaunch/bin/wsdr-zero
+Terminal=false
+Icon=share/images/wsdr-zero.png
+Type=Application

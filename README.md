@@ -31,6 +31,10 @@ dongles it shows two views side by side on one axis (Panorama) or stacked on the
 - **Receive only.** The app never transmits.
 - **Platform:** Linux, x86-64, glibc ≥ 2.34 (Ubuntu 22.04 or newer and similar; libstdc++ is built in).
 
+**Handheld:** [`zero/`](zero/README.md) is a small-screen version for the M5Stack CardputerZero
+(64-bit ARM, 320 × 170, keyboard): one spectrum and waterfall in the adapters' USB 2 modes, packaged
+for the device's launcher. It has not been run on the device yet.
+
 ## Screenshots
 
 **Single:** one 8812BU at 40 MHz on 2.4 GHz ch 6, Mark signals on. Wi-Fi frames are marked on the
@@ -263,6 +267,7 @@ The backend listens on 127.0.0.1 only and checks every request's `Host` header a
 | `web/` | React + TypeScript UI (Vite): `App.tsx` shell (modes, sidebar, links), `Station.tsx` one view, `display.ts` spectrum + waterfall (also the stitched Panorama) and the signal marks, `Panorama.tsx`, `Constellation.tsx` the frame inspector, `BandRuler.tsx` + `bands.ts` + `channels.ts` the channel axis, `survey.ts` its per-channel survey, `SpectralMap.tsx` the sweep, `hub.ts` the shared socket |
 | `desktop/` | Electron shell: `main.js` (starts the backend, window, lock-down; `backend.log` and `prefs.json` in `~/.config/wsdr-studio`), `preload.js` (token and preferences bridge) |
 | `external/wifi-sdr` | the receive core (submodule; brings devourer) |
+| `zero/` | wsdr-zero: the handheld app for the CardputerZero (framebuffer + keyboard UI on the same engine; `scripts/build-zero-deb.sh`, `cmake/aarch64-linux-gnu.cmake`) |
 | `docs/` | design and build plan; `FPV.md`: analog FPV video (what the adapters can do, the analog video mark, a decoder plan) |
 | `scripts/` | `build-appimage.sh` (the AppImage); `fpv_sim.py` (simulated analog FPV recordings, and a reference decoder for them) |
 | `tests/` | unit tests (C++), the end-to-end checks against a running app (`e2e.mjs` view A, `e2e-dual.mjs` view B); `web/tests` the UI's unit tests (`npm test`) |

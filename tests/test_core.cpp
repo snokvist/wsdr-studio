@@ -246,7 +246,7 @@ static void test_row_golden() {
   DecodedRow d;
   CHECK(decode_row(fr.data(), fr.size(), d) && d.slot == 1 && d.path == 1 && d.gapped && d.offset && d.gen == 7 && d.seq == 258);
   CHECK(d.bins == 4 && d.t == 1.5 && d.f0 == 5180e6 && d.df == 4000);
-  CHECK(std::abs(d.avg[1] + 100.f) <= kDbStep / 2 + 1e-3f && d.max[3] == kDbMin + 255 * kDbStep); // (clamped at the top)
+  CHECK(std::abs(d.avg[1] + 100.f) <= kDbStep / 2 + 1e-3f && std::abs(d.max[3] - (kDbMin + 255 * kDbStep)) < 1e-3f); // (clamped at the top; not ==: ARM fuses the multiply-add)
   const auto fa = encode_row(r, 1.5, 0); // the engine's slot wins over the row's
   CHECK(decode_row(fa.data(), fa.size(), d) && d.slot == 0);
 }
