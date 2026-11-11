@@ -32,8 +32,14 @@ std::vector<DeviceInfo> scan_devices() {
   const ssize_t n = libusb_get_device_list(ctx, &list);
   for (ssize_t i = 0; i < n; i++) {
     libusb_device_descriptor d{};
-    if (libusb_get_device_descriptor(list[i], &d) != 0 || d.idVendor != 0x0bda ||
-        (d.idProduct != wsdr::kPid8812bu && !wsdr::jaguar3_pid(d.idProduct)))
+        if (libusb_get_device_descriptor(list[i], &d) != 0)
+      continue;
+    // OEM-branded 8812BU: TP-Link Archer T3U Plus (2357:0138) is reported as the logical 0bda:b812
+    if (d.idVendor == 0x2357 && d.idProduct == 0x0138) {
+      d.idVendor = 0x0bda;
+      d.idProduct = wsdr::kPid8812bu;
+    }
+    if (d.idVendor != 0x0bda || (d.idProduct != wsdr::kPid8812bu && !wsdr::jaguar3_pid(d.idProduct)))
       continue;
     DeviceInfo info;
     info.pid = d.idProduct;
