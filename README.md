@@ -60,6 +60,7 @@ shaded slot at A's centre is the 8812CU's own notch.
    SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="b812", TAG+="uaccess", MODE="0660", GROUP="plugdev"
    SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="c812", TAG+="uaccess", MODE="0660", GROUP="plugdev"
    SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="a81a", TAG+="uaccess", MODE="0660", GROUP="plugdev"
+   SUBSYSTEM=="usb", ATTRS{idVendor}=="2357", ATTRS{idProduct}=="0138", TAG+="uaccess", MODE="0660", GROUP="plugdev"
    RULES
    sudo rm -f /etc/udev/rules.d/99-wsdr.rules   # (the rule's old name, if an earlier setup left it)
    sudo udevadm control --reload
@@ -191,8 +192,8 @@ The window needs at least 1280 × 720.
 
 - **"cannot open it" / no permission:** the udev rule is missing, or the dongle was not replugged
   after adding it.
-- **No adapter listed:** check `lsusb` for `0bda:b812` (8812BU), `0bda:c812` (8812CU) or `0bda:a81a` (8812EU); the app
-  looks again every few seconds.
+- **No adapter listed:** check `lsusb` for `0bda:b812` (8812BU), `0bda:c812` (8812CU) or `0bda:a81a` (8812EU), or
+  `2357:0138` (TP-Link Archer T3U Plus, an 8812BU); the app looks again every few seconds.
 - **The 8812BU stays at USB 2** ("The 8812BU stayed at USB 2: this port or cable may not carry USB 3";
   only 2.5 and 5 MHz continuous): use a USB 3 port and cable (SuperSpeed, often blue), then replug.
   Until then the wider spans are offered as "gapped" only.
