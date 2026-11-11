@@ -50,8 +50,14 @@ export const bandsOf = (d: Device | undefined): ('2.4' | '5')[] => d?.bands ?? [
 export const hears = (d: Device | undefined, f: number) => bandsOf(d).includes(bandOf(f));
 // The udev rule (the same as the README's): self-contained, so it works from the AppImage. Its number
 // sorts before 73-seat-late.rules, where uaccess is applied (a later rule never gets it).
-export const UDEV_RULES = [0xb812, 0xc812, 0xa81a]
-  .map((pid) => `SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="${pid.toString(16)}", TAG+="uaccess", MODE="0660", GROUP="plugdev"`)
+// (0x2357:0x0138 is the TP-Link Archer T3U Plus, an OEM-branded 8812BU.)
+export const UDEV_RULES = [
+  [0x0bda, 0xb812],
+  [0x0bda, 0xc812],
+  [0x0bda, 0xa81a],
+  [0x2357, 0x0138],
+]
+  .map(([vid, pid]) => `SUBSYSTEM=="usb", ATTRS{idVendor}=="${vid.toString(16).padStart(4, '0')}", ATTRS{idProduct}=="${pid.toString(16).padStart(4, '0')}", TAG+="uaccess", MODE="0660", GROUP="plugdev"`)
   .join('\n');
 export const UDEV_CMD = `printf '%s\\n' '${UDEV_RULES.split('\n').join("' '")}' | sudo tee /etc/udev/rules.d/70-wsdr.rules > /dev/null && sudo udevadm control --reload`;
 export const LOCKED = 'End the recording to change tuning or gain';
