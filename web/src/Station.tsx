@@ -597,11 +597,12 @@ export function Station(p: {
       setStarting(false);
     }
   };
-  // Waiting for an adapter (none found: view A looks; or this one unplugged): look again every 3 s
-  // (no hotplug events). The unplugged adapter starts again when it is back: on its port once a scan
-  // showed it gone, or as an adapter of that model that was not there before (a replug can change the
-  // bus); never one the other view has.
-  const waiting = connected && !open && !opening && ((!devices.length && slot === 0) || !!lost);
+  // Waiting for an adapter (none found: view A looks; this one unplugged; or the selected one listed but
+  // not openable, until the udev rule + a replug let it open): look again every 3 s (no hotplug events, and
+  // can_open is only re-read by a scan). The unplugged adapter starts again when it is back: on its port
+  // once a scan showed it gone, or as an adapter of that model that was not there before (a replug can
+  // change the bus); never one the other view has.
+  const waiting = connected && !open && !opening && ((!devices.length && slot === 0) || !!lost || (!!sel && !sel.can_open));
   useEffect(() => {
     if (!waiting) return;
     const t = window.setInterval(() => hub.request('scan', { slot }).catch(() => {}), 3000);
@@ -659,6 +660,7 @@ export function Station(p: {
   };
   const setPaths = (paths: string) => paths !== dsp.paths && req('dsp', { paths }).catch(() => {});
   const copy = (text: string) => navigator.clipboard?.writeText(text).then(() => addBanner('Copied')).catch(() => {});
+  const rescan = () => void req('scan').catch(() => {}); // look for adapters again now
 
   // diagnostics: only when they are abnormal
   const st = status?.rx;
@@ -733,7 +735,7 @@ export function Station(p: {
             })}
           </select>
           {!open && (
-            <button className="icon" aria-label="Look for adapters again" disabled={opening || !connected} onClick={() => req('scan').catch(() => {})} title="Look for adapters again">
+            <button className="icon" aria-label="Look for adapters again" disabled={opening || !connected} onClick={rescan} title="Look for adapters again">
               ⟳
             </button>
           )}
@@ -1005,7 +1007,7 @@ export function Station(p: {
             </svg>
             <h2>No adapter found</h2>
             <p>Plug in an RTL8812BU, RTL8812CU or RTL8812EU. It appears here by itself; Rescan looks again now.</p>
-            <button onClick={() => req('scan').catch(() => {})}>⟳ Rescan</button>
+            <button onClick={rescan}>⟳ Rescan</button>
           </div>
         ) : sel && !sel.can_open ? (
           <div className="vcard" role="status">
@@ -1014,9 +1016,12 @@ export function Station(p: {
               <path d="M8 11V8a4 4 0 0 1 8 0v3" />
             </svg>
             <h2>{sel.model} found, but this user cannot open it</h2>
-            <p>Run this once in a terminal (it asks for your password), then unplug and replug the adapter:</p>
+            <p>Run this once in a terminal (it asks for your password), then unplug and replug the adapter. The app finds it again by itself (Rescan looks now); then press Start.</p>
             <code className="cmd">{UDEV_CMD}</code>
-            <button onClick={() => copy(UDEV_CMD)}>Copy command</button>
+            <div className="row">
+              <button onClick={() => copy(UDEV_CMD)}>Copy command</button>
+              <button onClick={rescan}>⟳ Rescan</button>
+            </div>
           </div>
         ) : null)}
         <div className="toasts">
