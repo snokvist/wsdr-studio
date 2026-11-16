@@ -48,10 +48,19 @@ export const jaguar3 = (chip: string) => /8822[CE]/.test(chip);
 // The bands an adapter's front end receives (the 8812EU has no 2.4 GHz one); no adapter: both
 export const bandsOf = (d: Device | undefined): ('2.4' | '5')[] => d?.bands ?? ['2.4', '5'];
 export const hears = (d: Device | undefined, f: number) => bandsOf(d).includes(bandOf(f));
-// The udev rule (the same as the README's): self-contained, so it works from the AppImage. Its number
-// sorts before 73-seat-late.rules, where uaccess is applied (a later rule never gets it).
-export const UDEV_RULES = [0xb812, 0xc812, 0xa81a]
-  .map((pid) => `SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="${pid.toString(16)}", TAG+="uaccess", MODE="0660", GROUP="plugdev"`)
+// The udev rule: self-contained, so it works from the AppImage; the same lines as wifi-sdr's tools/70-wsdr.rules
+// and the README (tests/udev.test.ts checks both). Its number sorts before 73-seat-late.rules, where uaccess
+// is applied (a later rule never gets it).
+export const UDEV_RULES = [
+  '0bda:b812',
+  '0bda:c812',
+  '0bda:a81a',
+  '2357:0138', // TP-Link Archer T3U Plus: an RTL8812BU under TP-Link's vendor id
+]
+  .map((id) => {
+    const [vid, pid] = id.split(':');
+    return `SUBSYSTEM=="usb", ATTRS{idVendor}=="${vid}", ATTRS{idProduct}=="${pid}", TAG+="uaccess", MODE="0660", GROUP="plugdev"`;
+  })
   .join('\n');
 export const UDEV_CMD = `printf '%s\\n' '${UDEV_RULES.split('\n').join("' '")}' | sudo tee /etc/udev/rules.d/70-wsdr.rules > /dev/null && sudo udevadm control --reload`;
 export const LOCKED = 'End the recording to change tuning or gain';
