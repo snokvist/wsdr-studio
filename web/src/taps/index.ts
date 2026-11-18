@@ -33,3 +33,12 @@ export type TapStatus = {
 
 // What the user asked a view to follow
 export type TapWatch = { kind: TapKindName; freq: number; params?: Record<string, unknown> };
+
+// What a kind's panel (TapPanel) gets: the watch it shows, the backend's latest status of it, the view's
+// handoff of the tap's frames (the panel gives it its sink), and close (it stops the watch)
+export type TapPanelProps = {
+  watch: TapWatch;
+  status: TapStatus | null;
+  frames: (sink: ((f: TapFrame) => void) | null) => void;
+  onClose: () => void;
+};

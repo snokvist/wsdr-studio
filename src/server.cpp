@@ -124,20 +124,20 @@ public:
       beast::get_lowest_layer(_ws).socket().close(ignored);
       return;
     }
-    const bool tap = bin && !is_row(*bin);
+    const bool tap = bin && !is_row(*bin); // (which queue: decided here, once)
     if (tap ? _queued_tap >= kMaxQueuedTap : bin && _queued_bin >= kMaxQueuedBinary) {
       // a slow page: the oldest row (or tap frame) still waiting goes, so what it gets next is the newest
       // picture (the front may be in flight: the one after it)
       if (!tap)
         _srv.count_drop();
       for (auto it = _q.begin() + 1; it != _q.end(); ++it)
-        if (it->bin && is_row(*it->bin) != tap) {
+        if (it->bin && it->tap == tap) {
           (tap ? _queued_tap : _queued_bin)--;
           _q.erase(it);
           break;
         }
     }
-    _q.push_back({std::move(text), std::move(bin)});
+    _q.push_back({std::move(text), std::move(bin), tap});
     if (_q.back().bin)
       (tap ? _queued_tap : _queued_bin)++;
     if (!_writing)
@@ -148,6 +148,7 @@ private:
   struct Out {
     std::shared_ptr<const std::string> text;
     std::shared_ptr<const std::vector<uint8_t>> bin;
+    bool tap = false; // a tap's frame (its own queue), not a spectrum row
   };
 
   void read() {
@@ -170,8 +171,8 @@ private:
     Out &o = _q.front();
     _ws.binary(o.bin != nullptr);
     auto done = [self = shared_from_this()](beast::error_code ec, size_t) {
-      if (const auto &b = self->_q.front().bin)
-        (is_row(*b) ? self->_queued_bin : self->_queued_tap)--;
+      if (const Out &o = self->_q.front(); o.bin)
+        (o.tap ? self->_queued_tap : self->_queued_bin)--;
       self->_q.pop_front();
       if (ec) {
         self->close();
@@ -200,12 +201,7 @@ private:
   beast::flat_buffer _buf;
   std::deque<Out> _q;
   size_t _queued_bin = 0, _queued_tap = 0; // spectrum rows / taps' frames waiting
-  static bool is_row(const std::vector<uint8_t> &b) {
-    uint32_t m = 0;
-    if (b.size() >= 4)
-      std::memcpy(&m, b.data(), 4);
-    return m == kRowMagic;
-  }
+  static bool is_row(const std::vector<uint8_t> &b) { return b.size() >= 4 && get_le<uint32_t>(b.data(), 0) == kRowMagic; }
   bool _writing = false, _closed = false;
 };
 

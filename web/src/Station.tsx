@@ -135,6 +135,11 @@ export function Station(p: {
   });
   const tapSink = useRef<((f: TapFrame) => void) | null>(null);
   const tapFrames = useCallback((s: ((f: TapFrame) => void) | null) => void (tapSink.current = s), []);
+  const hideTap = useCallback(() => {
+    Object.assign(tapRef.current, { open: false, shown: -1 });
+    setTap(null);
+    setTapStatus(null);
+  }, []);
   const tapEvent = useCallback((e: TapStatus) => {
     const t = tapRef.current, w = typeof e.watch === 'number' ? e.watch : 0;
     t.ev = e;
@@ -144,11 +149,9 @@ export function Station(p: {
       if (typeof e.freq === 'number') setTap({ kind: e.kind, freq: e.freq, params: e.params });
       setTapStatus(e);
     } else if (t.open) {
-      Object.assign(t, { open: false, shown: -1 }); // stopped (Stop, the adapter lost, another window): the panel goes too
-      setTap(null);
-      setTapStatus(null);
+      hideTap(); // stopped (Stop, the adapter lost, another window): the panel goes too
     }
-  }, []);
+  }, [hideTap]);
   const stopTap = useCallback(
     (kind: string, watch: number) => {
       tapRef.current.floor = Math.max(tapRef.current.floor, watch + 1);
@@ -163,9 +166,7 @@ export function Station(p: {
         // close: stop the watch on show (if another replaced it meanwhile, that one goes on and shows)
         if (t.waiting) t.cancel = true;
         else if (t.shown >= 0 && t.kind) stopTap(t.kind, t.shown);
-        Object.assign(t, { open: false, shown: -1 });
-        setTap(null);
-        setTapStatus(null);
+        hideTap();
         return;
       }
       setInspect(null); // one panel at a time
@@ -194,7 +195,7 @@ export function Station(p: {
         },
       );
     },
-    [hub, slot, stopTap, tapEvent],
+    [hub, slot, stopTap, tapEvent, hideTap],
   );
   const closeTap = useCallback(() => watchTap(null), [watchTap]);
   // a view that goes (leaving a two-view mode) stops what it followed; a reloaded page finds it again (below)
@@ -251,7 +252,7 @@ export function Station(p: {
       }
     };
     d.onHint = (t) => addBanner(t);
-    d.onVideo = (hz) => watchTap({ kind: 'video', freq: hz });
+    d.onAnalog = { hint: 'its picture', pick: (hz) => watchTap({ kind: 'video', freq: hz }) };
     d.onFrame = (id) => {
       watchTap(null); // one panel at a time
       setInspect({ id, data: null, error: null });
@@ -298,8 +299,10 @@ export function Station(p: {
       },
       connection: (up) => {
         setConnected(up);
-        if (!up) tapRef.current.floor = 0; // (a restarted backend counts watches from 1 again)
-        if (!up) wasOpen = false; // the radio may be stopped and restarted elsewhere meanwhile: the next caps is a fresh Start
+        if (!up) {
+          tapRef.current.floor = 0; // (a restarted backend counts watches from 1 again)
+          wasOpen = false; // the radio may be stopped and restarted elsewhere meanwhile: the next caps is a fresh Start
+        }
       },
       giveUp: (why) => setFatal(why),
       event: (e) => {

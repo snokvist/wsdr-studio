@@ -2,7 +2,7 @@
 // The video tap's panel: the analog video transmitter's picture (a clicked analog video mark), with what
 // the decoder found (its standard, colour, how many lines hold their sync).
 import { useEffect, useRef, useState } from 'react';
-import type { TapFrame, TapStatus, TapWatch } from './index';
+import type { TapPanelProps } from './index';
 import { decodeVideo, toRgba, type VideoField } from './video';
 
 const STATE: Record<string, string> = {
@@ -11,15 +11,9 @@ const STATE: Record<string, string> = {
   searching: 'Looking for the picture’s sync…',
 };
 
-export function VideoPanel(p: {
-  watch: TapWatch;
-  status: TapStatus | null;
-  frames: (sink: ((f: TapFrame) => void) | null) => void; // the view hands this panel its tap's frames
-  onClose: () => void;
-}) {
+export function VideoPanel(p: TapPanelProps) {
   const ref = useRef<HTMLCanvasElement>(null);
   const [big, setBig] = useState(false);
-  const [size, setSize] = useState<[number, number] | null>(null); // the field's, for the aspect
 
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
@@ -46,7 +40,6 @@ export function VideoPanel(p: {
       if (cv.width !== f.width || cv.height !== f.height) {
         cv.width = f.width;
         cv.height = f.height;
-        setSize([f.width, f.height]);
       }
       const c = cv.getContext('2d');
       if (!c) return;
@@ -78,7 +71,7 @@ export function VideoPanel(p: {
           ×
         </button>
       </header>
-      <canvas ref={ref} className={locked ? 'pic' : 'pic idle'} style={{ aspectRatio: '4 / 3' }} data-w={size?.[0]} />
+      <canvas ref={ref} className={locked ? 'pic' : 'pic idle'} style={{ aspectRatio: '4 / 3' }} />
       {locked ? (
         <p className="note">
           {String(s?.std || '')} · {s?.colour ? 'colour' : 'black and white'} · {lock} % of lines locked · {fields.toFixed(0)} fields/s

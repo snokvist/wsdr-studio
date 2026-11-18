@@ -18,6 +18,7 @@
 #pragma once
 
 #include <chrono>
+#include <cmath>
 #include <complex>
 #include <cstdint>
 #include <functional>
@@ -29,6 +30,9 @@
 #include "receiver.h"
 
 namespace studio {
+
+// the 8812BU's continuous 20 and 40 MS/s spans: what the Wi-Fi finder and the video tap decode
+inline bool continuous_rate(double fs) { return std::abs(fs - 40e6) < 1e3 || std::abs(fs - 20e6) < 1e3; }
 
 // FFTW's planner is not thread-safe: every plan is made and destroyed under this lock.
 std::mutex &fftw_plan_mutex();

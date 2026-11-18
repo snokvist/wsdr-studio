@@ -1,18 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "tap.h"
 
-#include <chrono>
 #include <cstring>
+
+#include "protocol.h"
 
 namespace studio {
 
 using json = nlohmann::json;
-
-namespace {
-double now_s() {
-  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-}
-} // namespace
 
 Tap::Tap(TapKind kind, int slot, BinarySink out, EventSink event)
     : _kind(std::move(kind)), _slot(slot), _out(std::move(out)), _event(std::move(event)) {
@@ -140,10 +135,12 @@ void Tap::loop() {
           gen = c.gen;
           fs = c.fs;
           centre = c.centre;
-          // (its frames get this watch's id, at offset 8)
-          dec = _kind.make(fs, w.freq - centre, w.params, _slot, [this, wid = w.id](std::vector<uint8_t> &&f) {
-            if (f.size() >= 12)
-              std::memcpy(f.data() + 8, &wid, 4);
+          // (its frames get the view slot, byte 6, and this watch's id, offset 8)
+          dec = _kind.make(fs, w.freq - centre, w.params, [this, wid = w.id](std::vector<uint8_t> &&f) {
+            if (f.size() >= 12) {
+              f[6] = static_cast<uint8_t>(_slot);
+              put_le<uint32_t>(f, 8, wid);
+            }
             _out(std::move(f));
           });
         }

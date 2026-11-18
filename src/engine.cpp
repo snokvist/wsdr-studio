@@ -22,8 +22,6 @@ namespace studio {
 
 namespace {
 using clk = std::chrono::steady_clock;
-const clk::time_point g_t0 = clk::now();
-double now_s() { return std::chrono::duration<double>(clk::now() - g_t0).count(); }
 
 const char *open_kind(wsdr::OpenError::Kind k) {
   switch (k) {
@@ -556,7 +554,6 @@ void Engine::open_adapter(uint16_t pid, const json &c) {
   _cb.event(settings());
 }
 
-// why: a recording still running ends with this reason (it is always saved)
 Tap *Engine::tap(const std::string &kind) const {
   for (const auto &t : _taps)
     if (t->name() == kind)
@@ -571,6 +568,7 @@ std::vector<json> Engine::tap_status() const {
   return v;
 }
 
+// why: a recording still running ends with this reason (it is always saved)
 void Engine::close_adapter(const std::string &why) {
   stop_recording(why);
   for (const auto &t : _taps)
@@ -947,7 +945,7 @@ void Engine::dsp_loop() {
       // Wi-Fi frames: a copy of path A, stamped on the rows' clock (a row is stamped when its last
       // samples are processed, here, so a frame lands in the row that holds it)
       {
-        const bool wifi = _wifi_on && !b->meta.gapped && (std::abs(b->meta.fs - 40e6) < 1e3 || std::abs(b->meta.fs - 20e6) < 1e3);
+        const bool wifi = _wifi_on && !b->meta.gapped && continuous_rate(b->meta.fs);
         bool tapping = false;
         for (const auto &t : _taps)
           tapping = tapping || t->accepts(b->meta);

@@ -10,8 +10,8 @@
 // A kind adds its decoder (TapDecoder) and its binary frame (its own magic; the first 8 bytes as below).
 //
 // Binary tap frames (little-endian) all start with: off 0 u32 magic (the kind's), 4 u16 version, 6 u8
-// view slot, 7 u8 flags (the kind's), 8 u32 watch (the Tap writes it: which watch the frame is of); the
-// rest is the kind's (video.h).
+// view slot, 7 u8 flags (the kind's), 8 u32 watch (which watch the frame is of); the Tap writes the slot
+// and the watch, the kind the rest (video.h).
 //
 // Status event: {"type":"tap", "kind", "on", "watch" (which watch it is of: the "tap" command's reply
 // carries the id; a stop's off status carries the id of the watch it ended), and while on: "freq" (Hz), "params" (as given), "state" ("span": not a span this
@@ -58,7 +58,7 @@ struct TapKind {
   std::function<bool(double fs)> rate_ok;
   double margin_hz = 0; // how far inside the span's edge the signal's frequency must be
   // a decoder for a run at fs with the signal at shift_hz; params: the "tap" command's, checked by check
-  std::function<std::unique_ptr<TapDecoder>(double fs, double shift_hz, const nlohmann::json &params, int slot,
+  std::function<std::unique_ptr<TapDecoder>(double fs, double shift_hz, const nlohmann::json &params,
                                             const BinarySink &out)>
       make;
   std::function<void(const nlohmann::json &params)> check; // throws std::invalid_argument; may be empty

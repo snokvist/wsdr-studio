@@ -29,8 +29,8 @@ constexpr size_t kVideoHeader = 32;
 
 TapKind video_tap();
 
-// One field of a decoder's picture (line-doubled, RGBX), as a binary video frame.
-std::vector<uint8_t> encode_video(const kp::Frame &f, int slot, uint32_t seq, double t, float lock, bool colour);
+// One field of a decoder's picture (line-doubled, RGBX), as a binary video frame (slot and watch left 0).
+std::vector<uint8_t> encode_video(const kp::Frame &f, uint32_t seq, double t, float lock, bool colour);
 
 struct DecodedVideo {
   int slot = 0, width = 0, height = 0;

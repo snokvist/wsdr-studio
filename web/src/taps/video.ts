@@ -25,19 +25,21 @@ export function decodeVideo(buf: ArrayBuffer): VideoField | null {
 // BT.601 full range to RGBA, into `out` (width * height * 4)
 export function toRgba(f: VideoField, out: Uint8ClampedArray) {
   const { width: w, height: h, y, u, v } = f, cw = w >> 1;
+  if (!f.colour) {
+    for (let i = 0, o = 0; i < w * h; i++, o += 4) {
+      out[o] = out[o + 1] = out[o + 2] = y[i];
+      out[o + 3] = 255;
+    }
+    return;
+  }
   for (let r = 0; r < h; r++) {
     const cr = (r >> 1) * cw;
     let o = r * w * 4, yi = r * w;
     for (let x = 0; x < w; x++, o += 4, yi++) {
-      const Y = y[yi];
-      if (!f.colour) {
-        out[o] = out[o + 1] = out[o + 2] = Y;
-      } else {
-        const c = cr + (x >> 1), U = u[c] - 128, V = v[c] - 128;
-        out[o] = Y + 1.402 * V;
-        out[o + 1] = Y - 0.344136 * U - 0.714136 * V;
-        out[o + 2] = Y + 1.772 * U;
-      }
+      const Y = y[yi], c = cr + (x >> 1), U = u[c] - 128, V = v[c] - 128;
+      out[o] = Y + 1.402 * V;
+      out[o + 1] = Y - 0.344136 * U - 0.714136 * V;
+      out[o + 2] = Y + 1.772 * U;
       out[o + 3] = 255;
     }
   }

@@ -13,12 +13,23 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
 #include "dsp.h"
 
 namespace studio {
+
+double now_s(); // the server's monotonic clock (s): the "t" of rows and of taps' frames
+
+// little-endian fields of the binary frames (the hosts this runs on are little-endian)
+template <class T> void put_le(std::vector<uint8_t> &b, size_t off, T v) { std::memcpy(b.data() + off, &v, sizeof v); }
+template <class T> T get_le(const uint8_t *p, size_t off) {
+  T v;
+  std::memcpy(&v, p + off, sizeof v);
+  return v;
+}
 
 constexpr int kProtocolVersion = 1;
 constexpr uint32_t kRowMagic = 0x57525357u; // "WSRW" little-endian
