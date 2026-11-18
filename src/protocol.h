@@ -9,15 +9,27 @@
 //   off  8 u32 seq    12 u32 bins    16 f64 t (s, server monotonic)    24 f64 f0 (Hz, bin 0)
 //   off 32 f64 df (Hz)   40 f32 db_min   44 f32 db_step   48 u8[bins] avg   48+bins u8[bins] max
 // A dB value v is sent as clamp(round((v - db_min) / db_step), 0, 255).
+// Other binary frames are the taps' (tap.h: their own magic, the view slot in byte 6; video.h).
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
 #include "dsp.h"
 
 namespace studio {
+
+double now_s(); // the server's monotonic clock (s): the "t" of rows and of taps' frames
+
+// little-endian fields of the binary frames (the hosts this runs on are little-endian)
+template <class T> void put_le(std::vector<uint8_t> &b, size_t off, T v) { std::memcpy(b.data() + off, &v, sizeof v); }
+template <class T> T get_le(const uint8_t *p, size_t off) {
+  T v;
+  std::memcpy(&v, p + off, sizeof v);
+  return v;
+}
 
 constexpr int kProtocolVersion = 1;
 constexpr uint32_t kRowMagic = 0x57525357u; // "WSRW" little-endian

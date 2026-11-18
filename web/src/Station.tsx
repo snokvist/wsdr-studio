@@ -7,6 +7,8 @@ import { channelAt } from './channels';
 import { Display, type Source } from './display';
 import type { Hub } from './hub';
 import { Constellation } from './Constellation';
+import type { TapFrame, TapStatus, TapWatch } from './taps/index';
+import { TapPanel } from './taps/TapPanel';
 import type { Caps, Device, DspSettings, FramePoints, Rate, RxSettings, Row, Status, WifiFrame } from './protocol';
 import { Seg } from './ui';
 import {
@@ -117,6 +119,87 @@ export function Station(p: {
   // the frame inspector: a clicked Wi-Fi mark's frame and, once the backend answered, its points
   const [inspect, setInspect] = useState<{ id: number; data: FramePoints | null; error: string | null } | null>(null);
   const closeInspect = useCallback(() => setInspect(null), []);
+  // the tap this view follows (taps/index.ts: an analog video transmitter's picture), its latest status,
+  // and where its frames go (the panel's drawing, without a render per frame)
+  const [tap, setTap] = useState<TapWatch | null>(null);
+  const [tapStatus, setTapStatus] = useState<TapStatus | null>(null);
+  // The panel follows the backend's tap on this view (one per kind; the backend's state is the truth):
+  // on, it shows that watch (whoever started it: this page, a reload, another window); off, it closes.
+  // open: a panel is up; shown/kind: the watch on show (-1: none yet, or this page's start not answered);
+  // floor: statuses of older watches are ignored (they came late: a start of this page, or a close, has
+  // passed them); seq/waiting: this page's latest start, not answered yet (the latest status waits in ev
+  // meanwhile; a reply of an earlier start only raises floor); cancel: that start's panel was closed.
+  const tapRef = useRef({
+    open: false, shown: -1, kind: '' as TapStatus['kind'] | '', floor: 0, seq: 0, waiting: false, cancel: false,
+    ev: null as TapStatus | null,
+  });
+  const tapSink = useRef<((f: TapFrame) => void) | null>(null);
+  const tapFrames = useCallback((s: ((f: TapFrame) => void) | null) => void (tapSink.current = s), []);
+  const hideTap = useCallback(() => {
+    Object.assign(tapRef.current, { open: false, shown: -1 });
+    setTap(null);
+    setTapStatus(null);
+  }, []);
+  const tapEvent = useCallback((e: TapStatus) => {
+    const t = tapRef.current, w = typeof e.watch === 'number' ? e.watch : 0;
+    t.ev = e;
+    if (t.waiting || w < t.floor) return; // (waiting: decided once the start is answered)
+    if (e.on || e.state === 'error') {
+      Object.assign(t, { open: true, shown: w, kind: e.kind });
+      if (typeof e.freq === 'number') setTap({ kind: e.kind, freq: e.freq, params: e.params });
+      setTapStatus(e);
+    } else if (t.open) {
+      hideTap(); // stopped (Stop, the adapter lost, another window): the panel goes too
+    }
+  }, [hideTap]);
+  const stopTap = useCallback(
+    (kind: string, watch: number) => {
+      tapRef.current.floor = Math.max(tapRef.current.floor, watch + 1);
+      hub.request('tap', { slot, kind, freq: 0, watch }).catch(() => {}); // (gone with the adapter: fine)
+    },
+    [hub, slot],
+  );
+  const watchTap = useCallback(
+    (w: TapWatch | null) => {
+      const t = tapRef.current;
+      if (!w) {
+        // close: stop the watch on show (if another replaced it meanwhile, that one goes on and shows)
+        if (t.waiting) t.cancel = true;
+        else if (t.shown >= 0 && t.kind) stopTap(t.kind, t.shown);
+        hideTap();
+        return;
+      }
+      setInspect(null); // one panel at a time
+      const my = ++t.seq;
+      Object.assign(t, { open: true, shown: -1, kind: w.kind, waiting: true, cancel: false });
+      setTap(w); // (shown at once: "Starting…")
+      setTapStatus(null);
+      hub.request('tap', { slot, kind: w.kind, freq: w.freq, params: w.params ?? {} }).then(
+        (r: { watch?: number }) => {
+          const id = typeof r.watch === 'number' ? r.watch : 0;
+          t.floor = Math.max(t.floor, id); // (statuses of the watches before this one came late)
+          if (my !== t.seq) return; // a later start replaced it (in the backend too)
+          t.waiting = false;
+          if (t.cancel) {
+            t.cancel = false;
+            stopTap(w.kind, id);
+            return;
+          }
+          if (t.ev) tapEvent(t.ev);
+        },
+        (e: Error) => {
+          if (my !== t.seq) return;
+          t.waiting = false;
+          if (!t.cancel) setTapStatus({ kind: w.kind, on: false, state: 'error', error: e.message });
+          t.cancel = false;
+        },
+      );
+    },
+    [hub, slot, stopTap, tapEvent, hideTap],
+  );
+  const closeTap = useCallback(() => watchTap(null), [watchTap]);
+  // a view that goes (leaving a two-view mode) stops what it followed; a reloaded page finds it again (below)
+  useEffect(() => () => watchTap(null), [watchTap]);
   const wantWifiRef = useRef(false); // (for the event handler: this window wants Wi-Fi frames found)
   const [hadPicture, setHadPicture] = useState(false);
   // unplugged while running: the adapter (pid, picker key) to start again when it is back
@@ -169,7 +252,9 @@ export function Station(p: {
       }
     };
     d.onHint = (t) => addBanner(t);
+    d.onAnalog = { hint: 'its picture', pick: (hz) => watchTap({ kind: 'video', freq: hz }) };
     d.onFrame = (id) => {
+      watchTap(null); // one panel at a time
       setInspect({ id, data: null, error: null });
       hub
         .request('points', { slot, frame: id })
@@ -209,9 +294,15 @@ export function Station(p: {
         }
       },
       other: (r) => view.current.ghost && d.setGhost(r),
+      tap: (f) => {
+        if (f.watch === tapRef.current.shown) tapSink.current?.(f); // (another watch's frames: not this panel's)
+      },
       connection: (up) => {
         setConnected(up);
-        if (!up) wasOpen = false; // the radio may be stopped and restarted elsewhere meanwhile: the next caps is a fresh Start
+        if (!up) {
+          tapRef.current.floor = 0; // (a restarted backend counts watches from 1 again)
+          wasOpen = false; // the radio may be stopped and restarted elsewhere meanwhile: the next caps is a fresh Start
+        }
       },
       giveUp: (why) => setFatal(why),
       event: (e) => {
@@ -287,6 +378,9 @@ export function Station(p: {
               }
               setDsp(e.dsp);
             }
+            break;
+          case 'tap':
+            tapEvent(e as TapStatus);
             break;
           case 'status': {
             setStatus(e);
@@ -1030,6 +1124,7 @@ export function Station(p: {
         <canvas ref={spRef} className="spectrum" />
         <canvas ref={wfRef} className="waterfall" />
         {inspect && <Constellation data={inspect.data} error={inspect.error} onClose={closeInspect} />}
+        {tap && <TapPanel key={`${tap.kind}:${tap.freq}`} watch={tap} status={tapStatus} frames={tapFrames} onClose={closeTap} />}
       </main>
 
       {(warn.length > 0 || (!prefs.retuned && open && !recording) || (recording && secsLeft < 60)) && (

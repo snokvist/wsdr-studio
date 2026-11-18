@@ -41,6 +41,11 @@ const OTHER_NAME = { T: 'Bluetooth', N: 'narrowband', M: 'microwave oven', E: 'B
 // clock harmonic (PAL/NTSC's ~15.7 kHz is below what the fine spectrum resolves)
 const LINE_RATES = [31.469, 33.75, 37.5, 37.879, 45, 48.363, 56.25, 63.981, 67.5, 88.8, 135];
 // a mark on the waterfall: a Wi-Fi frame, or another signal in the same shape (rate and length 0)
+const med = (a: number[]) => [...a].sort((x, y) => x - y)[a.length >> 1];
+// the analog video marks among `marks` of the transmitter nearest hz
+const transmitterAt = (marks: Mark[], hz: number) =>
+  nearestTransmitter(marks.filter((m) => m[3] === 'A').map((m) => ({ mhz: m[1], line: m[4], dev: m[2] })), hz);
+
 type Mark = [t: number, mhz: number, bw: number, fmt: WifiFrame[3] | OtherSignal[3], rate: number, len: number, us: number, snr: number,
   ta?: string | null, bssid?: string | null, ssid?: string | null, ch?: number];
 const isWifiFmt = (k: Mark[3]): k is WifiFrame[3] => k in WIFI_NAME;
@@ -127,6 +132,9 @@ export class Display {
   };
   onRetune: (freq: number) => void = () => {};
   onFrame: (id: number) => void = () => {}; // a Wi-Fi mark clicked: that frame's id
+  // an analog video mark clicked: its transmitter's frequency, and what a click there does (the hover's
+  // hint, e.g. "its picture"); null: nothing
+  onAnalog: { hint: string; pick: (hz: number) => void } | null = null;
 
   constructor(sp: HTMLCanvasElement, wf: HTMLCanvasElement) {
     this.sp = sp;
@@ -163,18 +171,23 @@ export class Display {
       const f = this.freqAt(e.offsetX);
       if (f !== null) this.onRetune(f); // the app snaps it to the radio's tuning steps
     });
-    // a Wi-Fi mark clicked: the inspector shows that frame's constellation
-    const markAt = (e: MouseEvent) => {
+    // a Wi-Fi mark clicked: the inspector shows that frame's constellation; an analog video mark: onAnalog
+    const markAt = (e: MouseEvent): { frame: number } | { analog: number } | null => {
       const f = this.freqAt(e.offsetX), wy = e.offsetY * this.dpr;
       if (f === null || (this.sepRows >= 0 && wy > this.sepRows)) return null; // older rows: another span
-      return this.frameAt(f, Math.round(wy));
+      // (analog video first: inside its band its hover offers onAnalog's)
+      const hz = this.onAnalog ? this.analogAt(f, Math.round(wy)) : null;
+      if (hz !== null) return { analog: hz };
+      const id = this.frameAt(f, Math.round(wy));
+      return id !== null ? { frame: id } : null;
     };
     on(wf, 'dblclick', (e) => {
       if (markAt(e) === null) this.onHint('Double-click the spectrum (top plot) to tune.');
     });
     on(wf, 'click', (e) => {
-      const id = e.detail > 1 ? null : markAt(e); // (the second click of a double-click: already asked)
-      if (id !== null) this.onFrame(id);
+      const m = e.detail > 1 ? null : markAt(e); // (the second click of a double-click: already asked)
+      if (m && 'frame' in m) this.onFrame(m.frame);
+      else if (m) this.onAnalog?.pick(m.analog);
     });
     let wasStale = false;
     const loop = () => {
@@ -752,18 +765,27 @@ export class Display {
     return best ? best.id : null;
   }
 
+  // (a mark covers its width about its centre; analog video its whole band)
+  private covers(m: Mark, f: number) {
+    const b = this.videoBand.get(m);
+    return b ? f >= b[0] * 1e6 && f <= b[1] * 1e6 : Math.abs(f - m[1] * 1e6) <= (m[2] / 2) * 1e6;
+  }
+
+  // The analog video transmitter under the pointer (as its hover tells it): its frequency (Hz)
+  private analogAt(f: number, rowsAgo: number): number | null {
+    const row = this.rowNo - rowsAgo;
+    const vids = transmitterAt(this.wifiKept.filter((k) => Math.abs(k.row - row) <= 2 && this.covers(k.f, f)).map((k) => k.f), f);
+    return vids.length ? med(vids.map((v) => v.mhz)) * 1e6 : null;
+  }
+
   // The Wi-Fi frames and other signals under the pointer: on that row (+-2) and covering that frequency
   private wifiAt(f: number, rowsAgo: number): string | null {
     const row = this.rowNo - rowsAgo;
-    // (a mark covers its width about its centre; analog video its whole band)
-    const covers = (m: Mark) => {
-      const b = this.videoBand.get(m);
-      return b ? f >= b[0] * 1e6 && f <= b[1] * 1e6 : Math.abs(f - m[1] * 1e6) <= (m[2] / 2) * 1e6;
-    };
-    const near = this.wifiKept.filter((k) => Math.abs(k.row - row) <= 2 && covers(k.f));
+    const near = this.wifiKept.filter((k) => Math.abs(k.row - row) <= 2 && this.covers(k.f, f));
     const hit = near.filter((k) => isWifi(k.f)), oth = near.filter((k) => !isWifi(k.f));
     const other = this.otherText(oth.map((k) => k.f), f);
     if (!hit.length) return other;
+    const analogHere = !!this.onAnalog && oth.some((k) => k.f[3] === 'A'); // (a click here is onAnalog's)
     const by: Record<string, number> = {};
     for (const k of hit) {
       const fmt = k.f[3];
@@ -781,16 +803,15 @@ export class Display {
     const from: Record<string, number> = {};
     for (const k of hit) if (k.f[8]) from[this.wifiNames.get(k.f[8]) ?? k.f[8]] = (from[this.wifiNames.get(k.f[8]) ?? k.f[8]] ?? 0) + 1;
     const who = Object.entries(from).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k]) => k);
-    return `Wi-Fi ${ch}: ${hit.length} frame${hit.length > 1 ? 's' : ''} (${kinds})${rate} · SNR ${snr[snr.length >> 1].toFixed(0)} dB${who.length ? ` · from ${who.join(', ')}` : ''}${other ? ` · ${other}` : ''}${hit.some((k) => (this.wifiIds.get(k.f) ?? -1) >= this.keptFrom) ? ' · click: its constellation' : ''}`;
+    return `Wi-Fi ${ch}: ${hit.length} frame${hit.length > 1 ? 's' : ''} (${kinds})${rate} · SNR ${snr[snr.length >> 1].toFixed(0)} dB${who.length ? ` · from ${who.join(', ')}` : ''}${other ? ` · ${other}` : ''}${!analogHere && hit.some((k) => (this.wifiIds.get(k.f) ?? -1) >= this.keptFrom) ? ' · click: its constellation' : ''}`;
   }
 
   // e.g. "Bluetooth 3, narrowband 1 · 2426 MHz · 366 µs"; analog video first, on its own (the
   // transmitter nearest the pointer at `hz`)
   private otherText(all: Mark[], hz: number): string | null {
     const ms = all.filter((m) => m[3] !== 'A');
-    const vids = nearestTransmitter(all.filter((m) => m[3] === 'A').map((m) => ({ mhz: m[1], line: m[4], dev: m[2] })), hz);
-    const med = (a: number[]) => [...a].sort((x, y) => x - y)[a.length >> 1];
-    const analog = vids.length ? videoText(med(vids.map((v) => v.mhz)), med(vids.map((v) => v.line)), med(vids.map((v) => v.dev))) : null;
+    const vids = transmitterAt(all, hz);
+    const analog = vids.length ? `${videoText(med(vids.map((v) => v.mhz)), med(vids.map((v) => v.line)), med(vids.map((v) => v.dev)))}${this.onAnalog ? ` · click: ${this.onAnalog.hint}` : ''}` : null;
     if (!ms.length) return analog;
     const by: Record<string, number> = {};
     for (const m of ms) by[OTHER_NAME[m[3] as OtherSignal[3]]] = (by[OTHER_NAME[m[3] as OtherSignal[3]]] ?? 0) + 1;

@@ -61,6 +61,8 @@ shaded slot at A's centre is the 8812CU's own notch.
    SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="c812", TAG+="uaccess", MODE="0660", GROUP="plugdev"
    SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="a81a", TAG+="uaccess", MODE="0660", GROUP="plugdev"
    SUBSYSTEM=="usb", ATTRS{idVendor}=="2357", ATTRS{idProduct}=="0138", TAG+="uaccess", MODE="0660", GROUP="plugdev"
+   SUBSYSTEM=="usb", ATTRS{idVendor}=="2357", ATTRS{idProduct}=="0115", TAG+="uaccess", MODE="0660", GROUP="plugdev"
+   SUBSYSTEM=="usb", ATTRS{idVendor}=="2357", ATTRS{idProduct}=="012d", TAG+="uaccess", MODE="0660", GROUP="plugdev"
    RULES
    sudo rm -f /etc/udev/rules.d/99-wsdr.rules   # (the rule's old name, if an earlier setup left it)
    sudo udevadm control --reload
@@ -165,11 +167,14 @@ The window needs at least 1280 × 720.
   with the FPV channels near it (bands A, B, E, F, R, L), and its deviation (sync tip to white). It
   is found down to about where its picture breaks up into sparklies. Narrow bursts and steady
   carriers inside its band (its swing and 7 MHz either side) are not marked: its own carrier makes
-  them, and anything else there is under it. The picture itself is not decoded (see
-  [docs/FPV.md](docs/FPV.md)). These are cheap rules, close enough to tag what the waterfall shows;
+  them, and anything else there is under it. **Click it for its picture** (below). These are cheap rules, close enough to tag what the waterfall shows;
   signals at the very edge of the span are missed.
   Analog video is only marked when its carrier is within about ±13 MHz of the centre at 40 MS/s, or
   ±5 MHz at 20 MS/s: tune closer to it.
+- **Analog video picture** (click an analog video mark): the transmitter's picture, NTSC or PAL, in
+  colour when it can, with how many of its lines hold their sync; ⤢ makes it cover the plots. Continuous
+  20 and 40 MS/s spans (an 8812BU on USB 3). The decoder is [kepyur](https://github.com/gilankpam/kepyur)'s
+  (`third_party/kepyur/`); see [docs/FPV.md](docs/FPV.md). Not yet tried on a real transmitter in this app.
 - **Frame inspector** (click a Wi-Fi mark): that frame's equalised subcarriers as a constellation:
   L-SIG, the HT/VHT signal field, and the payload's first 32 symbols, with the EVM, the SNR and the
   sender's carrier offset (kHz, ppm; both crystals' errors), plus the sender and network when the
@@ -193,7 +198,8 @@ The window needs at least 1280 × 720.
 - **"cannot open it" / no permission:** the udev rule is missing, or the dongle was not replugged
   after adding it.
 - **No adapter listed:** check `lsusb` for `0bda:b812` (8812BU), `0bda:c812` (8812CU) or `0bda:a81a` (8812EU), or
-  `2357:0138` (TP-Link Archer T3U Plus, an 8812BU); the app looks again every few seconds.
+  `2357:0138`, `2357:0115` or `2357:012d` (TP-Link Archer T3U Plus, T4U v3 or T3U: 8812BUs); the app looks
+  again every few seconds.
 - **The 8812BU stays at USB 2** ("The 8812BU stayed at USB 2: this port or cable may not carry USB 3";
   only 2.5 and 5 MHz continuous): use a USB 3 port and cable (SuperSpeed, often blue), then replug.
   Until then the wider spans are offered as "gapped" only.
@@ -226,6 +232,7 @@ node tests/e2e.mjs [--record]          # against the running app, view A open
 node tests/e2e-dual.mjs                # view B (a second 8812BU); B is put back as it was
 scripts/fpv_sim.py make --out /tmp/fpv   # a simulated analog FPV recording (SigMF; docs/FPV.md)
 build/test_core --wifi /tmp/fpv.sigmf-data   # the signal finder over a recording: "A 5806 MHz line 15.73 kHz"
+build/test_core --video /tmp/fpv.sigmf-data 5806 /tmp/field.ppm   # the picture decoder over it (its last field)
 ```
 
 **Desktop shell (dev):** `cd desktop && npm ci && npm start` runs Electron on `build/wsdr-studiod`
@@ -264,7 +271,8 @@ The backend listens on 127.0.0.1 only and checks every request's `Host` header a
 | `web/` | React + TypeScript UI (Vite): `App.tsx` shell (modes, sidebar, links), `Station.tsx` one view, `display.ts` spectrum + waterfall (also the stitched Panorama) and the signal marks, `Panorama.tsx`, `Constellation.tsx` the frame inspector, `BandRuler.tsx` + `bands.ts` + `channels.ts` the channel axis, `survey.ts` its per-channel survey, `SpectralMap.tsx` the sweep, `hub.ts` the shared socket |
 | `desktop/` | Electron shell: `main.js` (starts the backend, window, lock-down; `backend.log` and `prefs.json` in `~/.config/wsdr-studio`), `preload.js` (token and preferences bridge) |
 | `external/wifi-sdr` | the receive core (submodule; brings devourer) |
-| `docs/` | design and build plan; `FPV.md`: analog FPV video (what the adapters can do, the analog video mark, a decoder plan) |
+| `docs/` | design and build plan; `FPV.md`: analog FPV video (what the adapters can do, the analog video mark, the picture) |
+| `third_party/kepyur/` | kepyur's analog video decoder, vendored unchanged (its README: source commit, licence) |
 | `scripts/` | `build-appimage.sh` (the AppImage); `fpv_sim.py` (simulated analog FPV recordings, and a reference decoder for them) |
 | `tests/` | unit tests (C++), the end-to-end checks against a running app (`e2e.mjs` view A, `e2e-dual.mjs` view B); `web/tests` the UI's unit tests (`npm test`) |
 

@@ -311,6 +311,8 @@ int main(int argc, char **argv) {
       srv->send_text(w, tagged(engs[i]->caps(), i));
       srv->send_text(w, tagged(engs[i]->settings(), i));
       srv->send_text(w, tagged(engs[i]->status(), i));
+      for (const json &t : engs[i]->tap_status())
+        srv->send_text(w, tagged(t, i));
     }
   };
   h.on_text = [&](const Server::ClientPtr &c, const std::string &t) {

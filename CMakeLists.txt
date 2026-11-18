@@ -22,9 +22,14 @@ find_package(nlohmann_json 3 REQUIRED)
 find_package(Boost 1.74 REQUIRED CONFIG COMPONENTS headers)
 find_package(Threads REQUIRED)
 
-add_library(studio_core STATIC src/dsp.cpp src/protocol.cpp src/device_scan.cpp src/recorder.cpp src/engine.cpp src/wifi.cpp src/signals.cpp)
+# kepyur's analog video decoder, vendored unchanged (third_party/kepyur/README.md)
+# (not on the include path: its video.h would shadow src/video.h; src/video.cpp includes it by path)
+add_library(kepyur STATIC third_party/kepyur/video.cpp third_party/kepyur/log.cpp)
+
+add_library(studio_core STATIC src/dsp.cpp src/protocol.cpp src/device_scan.cpp src/recorder.cpp src/engine.cpp src/wifi.cpp src/signals.cpp
+            src/tap.cpp src/video.cpp)
 target_include_directories(studio_core PUBLIC src)
-target_link_libraries(studio_core PUBLIC wsdrcore iqdsp PkgConfig::FFTW3F nlohmann_json::nlohmann_json Threads::Threads)
+target_link_libraries(studio_core PUBLIC wsdrcore iqdsp kepyur PkgConfig::FFTW3F nlohmann_json::nlohmann_json Threads::Threads)
 target_compile_options(studio_core PRIVATE -Wall -Wextra)
 # The finder's complex arithmetic without Annex G: no NaN/Inf recovery (nothing there relies on it),
 # so a complex product is four multiplies instead of a library call per sample (GCC 11 made every one).

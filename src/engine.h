@@ -27,6 +27,8 @@
 #include "receiver.h"
 #include "recorder.h"
 #include "ring.h"
+#include "samples.h"
+#include "tap.h"
 #include "wifi.h"
 
 namespace studio {
@@ -90,6 +92,9 @@ public:
   json caps() const;     // {"type":"caps", ...} (open:false if closed)
   static json devices_json(const std::vector<DeviceInfo> &d);
 
+  // the taps' latest status events ({"type":"tap", ...}), for a page that connects
+  std::vector<json> tap_status() const;
+
   uint64_t rows_emitted() const { return _rows; }
   uint64_t ring_dropped() const { return _ring.dropped(); }
   double dsp_load() const { return _dsp_load; }
@@ -119,6 +124,10 @@ private:
   mutable std::mutex _rxm;
   std::shared_ptr<wsdr::Receiver> _rx; // replaced on the command thread, read anywhere via rx()
   BankRing _ring{512};
+  // Taps (tap.h): decoders that follow one signal in the samples (analog video). Built with the engine,
+  // never added or removed: the DSP thread reads the list without a lock.
+  std::vector<std::unique_ptr<Tap>> _taps;
+  Tap *tap(const std::string &kind) const;
   Recorder _rec;
 
   std::mutex _qm;
@@ -128,10 +137,10 @@ private:
   std::condition_variable _diskcv;
   std::thread _cmd, _dsp, _disk, _wifi;
 
-  // Wi-Fi frames: the DSP thread hands copies of path A's samples to their own thread (dropped when it
-  // falls behind), which sends what it finds as "wifi" events, a few times a second
+  // Wi-Fi frames: the DSP thread hands path A's samples (shared with the taps) to their own thread
+  // (dropped when it falls behind), which sends what it finds as "wifi" events, a few times a second
   struct WifiChunk {
-    std::vector<std::complex<float>> x;
+    Samples x;
     double t_end = 0, fs = 0, centre = 0;
     uint32_t gen = 0;
     uint64_t seq = 0; // the bank's: a gap (dropped here or in the ring) starts the finder again
@@ -140,7 +149,7 @@ private:
   std::mutex _wm;
   std::condition_variable _wcv;
   std::deque<WifiChunk> _wq;
-  std::vector<std::vector<std::complex<float>>> _wpool; // spare buffers
+  SamplePool _samples; // path A's buffers, unpacked once a bank for the Wi-Fi finder and the taps
   bool _wquit = false;
   std::atomic<bool> _wifi_on{false};
   std::atomic<uint64_t> _wifi_dropped{0};

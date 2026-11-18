@@ -1,13 +1,13 @@
 # Analog FPV video (FM composite) with wsdr-studio
 
 Analog FPV drones send their camera's composite video (NTSC or PAL) as FM, mostly at 5.65-5.95 GHz.
-This note records what the adapters can do with such a signal, what the app does with it today (the
-"analog video" mark), how that was tested without a drone, and what a picture decoder in the app would
-take. Receive only: nothing here transmits.
+This note records what the adapters can do with such a signal, what the app does with it (the
+"analog video" mark, and the picture: click the mark), and how that was tested without a drone.
+Receive only: nothing here transmits.
 
-Status (2026-11): the mark and the simulator exist and are tested on simulated signals, including ones
-made from real footage. **Nothing here has met a real video transmitter yet**: that is the first open
-item (below).
+Status (2026-11): the mark, the picture and the simulator exist. The picture comes from kepyur's decoder
+(below), which was measured on a real NTSC transmitter in kepyur; **in this app, nothing has met a real
+video transmitter yet**: that is the first open item (below).
 
 ## Can the adapters receive it?
 
@@ -227,27 +227,37 @@ SDRangel with `SOAPY_SDR_PLUGIN_PATH` pointing at the module. Use a SoapySDR inp
 40 MS/s tuned near the channel, and the ATV demodulator in FM mode with 625 or 525 lines. It shows
 the luminance only: black and white.
 
-## A picture decoder in the app (plan)
+## The picture (implemented)
 
-1. **Backend:** path A (or A+B combined; first compensate B's lead) mixed to the video's centre, then
-   band-limited (as the mark's sub-bands are), FM-demodulated, low-passed to the video band, and
-   resampled to a line-locked grid (13.5 MS/s, or 4 × the colour subcarrier).
-2. **Sync:** a horizontal PLL on the sync leading edges, the vertical sync from the broad pulses,
-   then fields woven into frames. `fpv_sim.py check` is a minimal offline version of this.
-3. **To the UI:** about 720 × 480/576 at 30/25 frames a second, sent as compressed frames (~1 MB/s) or
-   raw 8-bit luma (~10 MB/s) over the existing WebSocket, drawn on a canvas.
-4. **Colour:** a burst-locked subcarrier PLL, then U/V demodulation (NTSC: phase from the burst; PAL:
-   the V switch and line averaging), and a comb filter to separate luma from chroma. Needs the 40 MHz
-   mode for the chroma sidebands.
-5. **Sound:** the 6.0/6.5 MHz subcarrier through a second discriminator.
-6. **De-emphasis:** add it if real transmitters turn out to use pre-emphasis.
+**Click an analog video mark** in the waterfall (its hover ends "click: its picture"): a panel shows the
+transmitter's picture, NTSC or PAL, in colour when its colour burst is steady (else black and white),
+with the standard, how many lines hold their sync and the field rate. ⤢ makes it cover the plots; Esc or
+× closes it and stops the decoder. Continuous 20 and 40 MS/s spans only (an 8812BU on USB 3); on other
+spans the panel says so, and when the transmitter is not inside the span it says to tune closer.
+
+- **The decoder** is [kepyur](https://github.com/gilankpam/kepyur)'s (Gilang's Android analog FPV
+  receiver on the same adapters), vendored unchanged in `third_party/kepyur/` (its README there): a DC
+  block and mixer to the carrier, a halfband to 20 MS/s, the FM discriminator, line and field sync, and
+  the colour decoder. kepyur measured it on a real R4 NTSC transmitter: 96.5 % of lines locked, the
+  picture holding to about 5 dB CNR.
+- **In the app** it is the first *tap* (`src/tap.h`): a decoder that follows one signal in a view's
+  samples on a thread of its own. Path A only. Each field goes to the page as YUV 4:2:0 (720 × 240 at
+  60 Hz or 720 × 288 at 50 Hz, ~15 MB/s on the local socket; a slow page skips fields).
+- **Measured** (2026-11-18): `fpv_sim.py` recordings, NTSC and PAL at 40 MS/s: 96.6 / 97.6 % of lines
+  locked, colour, no lock losses; `test_core` checks NTSC at 40 MS/s and PAL at 20 MS/s synthesised in
+  C++. Live on an 8812BU (no transmitter: the decoder searching): about 0.6 of a core at 40 MS/s and 0.3
+  at 20 MS/s on top of the rest, with the Wi-Fi finder still dropping nothing on a busy channel 36.
+- **Offline:** `build/test_core --video REC.sigmf-data MHZ [field.ppm]` runs the decoder over a
+  recording (the transmitter at MHZ) and writes its last field.
+- **Not done:** sound (the 6.0/6.5 MHz subcarrier), diversity (paths A and B combined), recording the
+  picture.
 
 ## Next steps
 
-1. **A real transmitter.** Record an analog VTX with **● Rec** at 40 MS/s on an 8812BU over USB 3, on a
-   few channels including one above 5885 MHz (R8 or E6-E8). Then run `test_core --wifi` and
-   `fpv_sim.py check` on the recordings.
+1. **A real transmitter.** Watch one in the app, and record it with **● Rec** at 40 MS/s on an 8812BU
+   over USB 3, on a few channels including one above 5885 MHz (R8 or E6-E8). Then run `test_core --wifi`,
+   `test_core --video` and `fpv_sim.py check` on the recordings.
 2. **Measure real transmitters:** their deviation, sync polarity, pre-emphasis and sound subcarrier;
    the front end's response above 5885 MHz; the mark's frequency against the VTX's set channel.
 3. **Cross-check** with SDRangel's ATV demodulator.
-4. **The decoder in the app,** black and white first.
+4. **Sound,** through a second tap kind or the video tap's params.

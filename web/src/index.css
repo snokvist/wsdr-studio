@@ -333,4 +333,11 @@ button.rcell > span { max-width: 100%; }
 .inspector dl.kv { margin: 0; font-size: 12px; }
 .inspector dl.kv dt { margin: 0; }
 .inspector dl.kv dd { margin: 0; color: var(--text); font-family: var(--mono); font-size: 11.5px; }
+/* a tap's panel (taps/): the analog video picture, as the inspector; larger: over the whole plot area */
+.inspector.video { width: 420px; }
+.inspector.video.big { left: 52px; right: 12px; bottom: 12px; width: auto; overflow: hidden; }
+.inspector.video canvas.pic { width: 100%; background: #000; border: 1px solid var(--line); border-radius: 4px; }
+.inspector.video.big canvas.pic { flex: 1 1 0; min-height: 0; width: auto; height: auto; max-width: 100%; align-self: center; } /* (what the header and status leave) */
+.inspector.video canvas.pic.idle { opacity: 0.45; }
+.inspector.video .note { margin: 0; font-size: 12px; }
 .inspector dl.kv dd .evm { display: block; white-space: nowrap; }
