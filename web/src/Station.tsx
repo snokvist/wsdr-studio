@@ -766,7 +766,7 @@ export function Station(p: {
             aria-label={`Span of view ${name}`}
             disabled={locked}
             value={cur.rate_sel}
-            // the centre stays as asked; a 40 MHz span centres within 2422-2462 / 5090-6155 MHz, so the
+            // the centre stays as asked; at 5 GHz a 40 MHz span centres within 5090-6155 MHz, so the
             // radio may sit beside it (the plot marks the requested frequency)
             onChange={(e) => {
               const r = Number(e.target.value);
@@ -788,12 +788,6 @@ export function Station(p: {
             <span className="note">
               Gapped: the adapter captures short slices of this span and ships each over USB, so only part of the time is
               seen. Spectrum and waterfall, no recording.
-            </span>
-          )}
-          {fsNow >= 40e6 && bandOf(cur.freq) === '2.4' && (
-            <span className="note">
-              {fsNow >= 80e6 ? 'An 80 MHz span centres between 2442 and 2462 MHz' : 'A 40 MHz span centres between 2422 and 2462 MHz'}: the
-              requested frequency is marked on the plot.
             </span>
           )}
           {jaguar3(chip) &&
@@ -897,9 +891,9 @@ export function Station(p: {
           {spanLabel(fsNow)} span
         </span>
         {offGrid && (
-          <span className="amber" title="At a 40 MHz span the radio centres within 2422–2462 / 5090–6155 MHz, or on its 5 MHz grid; the requested frequency is marked on the plot">
+          <span className="amber" title="The radio tunes on its grid: the 2.4 GHz channels, and 5 GHz in 5 MHz steps (a 40 MHz span centred within 5090–6155 MHz, an 80 MHz one within 5110–6135 MHz); the requested frequency is marked on the plot">
             <span className="long">requested {mhz(cur.freq, 0)} · </span>tuned {mhz(tuned, 0)}
-            <span className="long"> ({Math.abs(tuned - cur.freq) >= 4.99e6 ? '40 MHz centres' : '5 MHz steps'})</span>
+            <span className="long"> ({bandOf(cur.freq) === '2.4' ? 'channel grid' : Math.abs(tuned - cur.freq) >= 4.99e6 ? `${fsNow >= 80e6 ? 80 : 40} MHz centres` : '5 MHz steps'})</span>
           </span>
         )}
         {runGapped && (

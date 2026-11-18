@@ -59,13 +59,44 @@ static std::vector<uint8_t> tone_bank(double f_hz, double fs, double amp, uint64
 
 static void test_channels() {
   using R = wsdr::Receiver;
+  // channel_for: the centre channel; primary_for: the primary + devourer ChannelOffset that tune it
+  const auto prim = [](int centre, int width, int ch, int off) {
+    const R::Primary p = R::primary_for(centre, width);
+    return p.channel == ch && p.offset == off;
+  };
   CHECK(R::channel_for(5180e6, 20) == 36);
-  CHECK(R::channel_for(5190e6, 40) == 36);
-  CHECK(std::abs(R::centre_of(36, 40) - 5190e6) < 1);
-  CHECK(R::channel_for(5230e6, 40) == 44);
+  CHECK(prim(36, 20, 36, 0));
+  CHECK(R::channel_for(5190e6, 40) == 38);
+  CHECK(prim(38, 40, 36, 1)); // 5 GHz: the centre above the primary, as before
+  CHECK(std::abs(R::centre_of(38) - 5190e6) < 1);
+  CHECK(R::channel_for(5230e6, 40) == 46);
+  CHECK(R::channel_for(5080e6, 40) == 18); // 5 GHz limits unchanged: primary 16..
+  CHECK(R::channel_for(5210e6, 80) == 42);
+  CHECK(prim(42, 80, 36, 1));
+  CHECK(R::channel_for(5080e6, 80) == 22);
+  CHECK(R::channel_for(6165e6, 80) == 227);
   CHECK(R::channel_for(2412e6, 20) == 1);
   CHECK(R::channel_for(2484e6, 20) == 14);
   CHECK(R::channel_for(5182e6, 20) == 36); // residual 2 MHz is shifted digitally
+  // 2.4 GHz wide spans centre on any channel 1-14 (the band edges; formerly 3-11 / 7-11)
+  CHECK(R::channel_for(2412e6, 40) == 1);
+  CHECK(prim(1, 40, 3, 2)); // centre below the primary
+  CHECK(prim(2, 40, 4, 2));
+  CHECK(prim(3, 40, 1, 1));
+  CHECK(R::channel_for(2484e6, 40) == 14);
+  CHECK(prim(14, 40, 12, 1));
+  CHECK(std::abs(R::centre_of(14) - 2484e6) < 1);
+  CHECK(R::channel_for(2412e6, 80) == 1);
+  CHECK(prim(1, 80, 3, 3)); // centre 2 below
+  CHECK(prim(3, 80, 1, 2)); // centre 2 above
+  CHECK(prim(6, 80, 4, 2));
+  CHECK(prim(7, 80, 1, 1)); // centre 6 above, as before
+  CHECK(prim(14, 80, 8, 1));
+  for (int c = 1; c <= 14; c++) // every 2.4 GHz primary is a channel 1-13
+    for (int w : {40, 80}) {
+      const R::Primary p = R::primary_for(c, w);
+      CHECK(p.channel >= 1 && p.channel <= 13);
+    }
   CHECK(R::igi_for(0, false) == 0x50);
   CHECK(R::igi_for(100, false) == 0x1C);
   CHECK(R::width_of(wsdr::RxSettings{5190e6, 1, true, false, 30}, false) == 40);
