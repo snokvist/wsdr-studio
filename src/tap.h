@@ -91,7 +91,8 @@ public:
 
 private:
   static constexpr size_t kBatch = 8;       // banks a wake-up of the tap's thread takes (~1.6 ms at 40 MS/s)
-  static constexpr size_t kMaxQueued = 512; // ~100 ms at 40 MS/s
+  static constexpr size_t kMaxTake = 32;    // banks decoded between looks at the watch and the status (~6.5 ms)
+  static constexpr size_t kMaxQueued = 512; // ~100 ms at 40 MS/s waiting (plus the kMaxTake being decoded)
   struct Chunk {
     Samples x;
     double fs = 0, centre = 0;
@@ -105,6 +106,7 @@ private:
   BinarySink _out;
   EventSink _event;
   std::atomic<double> _freq{0};       // (for on() on the DSP thread; the tap's thread reads _watch)
+  std::atomic<uint32_t> _wid{0};      // _watch.id, for the tap's thread mid-batch (with _freq: a stop or a new watch ends the batch)
   struct Watch {
     double freq = 0;
     nlohmann::json params = nlohmann::json::object();

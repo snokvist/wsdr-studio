@@ -1528,31 +1528,84 @@ static void test_video_follow() {
   }
 }
 
+// A tap that is behind (a decoder slower than the stream): a stop is acted on within a few chunks'
+// decoding, not after the backlog; its off status goes out about at once; the backlog is bounded.
+static void test_tap_backlog() {
+  struct Slow : TapDecoder {
+    std::atomic<int> *fed;
+    void feed(const std::complex<float> *, size_t) override {
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      (*fed)++;
+    }
+    nlohmann::json stats() const override { return {{"state", "locked"}}; }
+  };
+  std::atomic<int> fed{0};
+  TapKind k;
+  k.name = "slow";
+  k.rate_ok = [](double) { return true; };
+  k.make = [&](double, double, const nlohmann::json &, const BinarySink &) -> std::unique_ptr<TapDecoder> {
+    auto d = std::make_unique<Slow>();
+    d->fed = &fed;
+    return d;
+  };
+  std::mutex m;
+  std::vector<nlohmann::json> ev;
+  Tap t(k, 0, [](std::vector<uint8_t> &&) {}, [&](const nlohmann::json &e) {
+    std::lock_guard<std::mutex> l(m);
+    ev.push_back(e);
+  });
+  const Samples x = std::make_shared<const std::vector<std::complex<float>>>(64);
+  wsdr::BankMeta meta;
+  meta.fs = 40e6;
+  meta.centre_hz = 5800e6;
+  const uint32_t id = t.watch(5800e6);
+  for (int i = 0; i < 600; i++) // ~1.2 s of decoding queued (the 512 cap drops the rest)
+    t.push(x, meta);
+  std::this_thread::sleep_for(std::chrono::milliseconds(60));
+  t.stop(id);
+  const auto t0 = std::chrono::steady_clock::now();
+  bool off = false;
+  while (!off && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(2)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    std::lock_guard<std::mutex> l(m);
+    off = !ev.empty() && ev.back()["on"] == false;
+  }
+  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  const int n = fed;
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  CHECK(off && ms < 150);     // (one take of kMaxTake chunks at most: ~64 ms here; the backlog was ~1 s)
+  CHECK(fed == n && n < 120); // nothing decoded after the stop, and most of the backlog never was
+  if (std::getenv("TEST_VERBOSE"))
+    std::printf("  (tap backlog: off after %.0f ms, %d of 512 chunks decoded)\n", ms, n);
+}
+
 // The sample pool (samples.h): a buffer comes back to the pool when its last holder lets go, and the
-// next get() reuses it; buffers beyond `keep` are freed; a buffer may outlive its pool.
+// next get() reuses it (the same vector, so the same storage: checked while nothing else is freed);
+// buffers beyond `keep` are freed; a buffer may outlive its pool.
 static void test_sample_pool() {
   Samples kept;
   {
     SamplePool pool(1);
     auto a = pool.get(100);
     const void *pa = a->data();
-    (*a)[0] = {1, 2};
     Samples s1 = a, s2 = a; // (the Wi-Fi finder and a tap)
     a.reset();
     s1.reset();
-    CHECK(pool.get(10)->data() != pa); // still held: a new buffer
-    s2.reset();                        // the last one: back to the pool
-    auto b = pool.get(100);
-    CHECK(b->data() == pa && b->size() == 100);
+    auto other = pool.get(10); // still held: a new buffer
+    CHECK(other->data() != pa);
+    s2.reset(); // the last one: back to the pool (the only slot)
+    auto b = pool.get(50); // (no larger than before: reused in place)
+    CHECK(b->data() == pa && b->size() == 50);
+    other.reset(); // back to the pool now that the slot is free
     auto c = pool.get(5), d = pool.get(5);
-    const void *pc = c->data(), *pd = d->data();
+    CHECK(c->capacity() >= 10); // (other's, reused)
+    const void *pc = c->data();
     c.reset();
     d.reset(); // keep 1: only c's is kept
-    auto e = pool.get(5);
-    CHECK(e->data() == pc && pd != pc);
+    CHECK(pool.get(5)->data() == pc);
     kept = std::move(b);
   }
-  CHECK(kept->size() == 100); // the pool is gone; its buffer is fine
+  CHECK(kept->size() == 50); // the pool is gone; its buffer is fine
   kept.reset();
 }
 
@@ -2065,6 +2118,7 @@ int main(int argc, char **argv) {
   test_video_follow();
   test_sample_pool();
   test_tap();
+  test_tap_backlog();
   test_video_tap();
   test_ble();
   std::printf(g_fail ? "%d FAILED\n" : "all tests passed\n", g_fail);
