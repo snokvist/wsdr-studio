@@ -56,6 +56,8 @@ export const UDEV_RULES = [
   '0bda:c812',
   '0bda:a81a',
   '2357:0138', // TP-Link Archer T3U Plus: an RTL8812BU under TP-Link's vendor id
+  '2357:0115', // TP-Link Archer T4U v3 (also an RTL8812BU)
+  '2357:012d', // TP-Link Archer T3U (also an RTL8812BU)
 ]
   .map((id) => {
     const [vid, pid] = id.split(':');
