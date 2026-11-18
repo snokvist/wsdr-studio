@@ -4,7 +4,8 @@
 // taps; a tap that is on copies path A's samples to a thread of its own, where its decoder runs, and
 // sends what the decoder makes to the page as binary frames, with a status event twice a second.
 //
-// What a tap does for every kind: the handoff from the DSP thread (dropping while its thread is behind),
+// What a tap does for every kind: the handoff from the DSP thread (path A's shared samples, in batches;
+// dropping while its thread is behind),
 // a new decoder after every retune or rate change (it is told the signal's offset from the run's centre),
 // the rates it accepts, whether the signal is in the span at all, the "tap" command and the status.
 // A kind adds its decoder (TapDecoder) and its binary frame (its own magic; the first 8 bytes as below).
@@ -36,6 +37,7 @@
 #include <nlohmann/json.hpp>
 
 #include "receiver.h"
+#include "samples.h"
 
 namespace studio {
 
@@ -82,14 +84,16 @@ public:
   bool on() const { return _freq.load() > 0; }
   // DSP thread, every bank: does it want this bank's path A (on, and a span its kind decodes)?
   bool accepts(const wsdr::BankMeta &m) const { return on() && !m.gapped && _kind.rate_ok(m.fs); }
-  // DSP thread, every bank: path A's samples (x: may be null when accepts() was false); copied to the
-  // tap's thread, or dropped while it is behind (the decoder finds the sync again after the gap).
-  void push(const std::complex<float> *x, size_t n, const wsdr::BankMeta &m);
+  // DSP thread, every bank: path A's samples (x: may be null when accepts() was false), shared with the
+  // tap's thread (no copy), or dropped while it is behind (the decoder finds the sync again after the gap).
+  void push(const Samples &x, const wsdr::BankMeta &m);
   nlohmann::json status() const; // the latest status event
 
 private:
+  static constexpr size_t kBatch = 8;       // banks a wake-up of the tap's thread takes (~1.6 ms at 40 MS/s)
+  static constexpr size_t kMaxQueued = 512; // ~100 ms at 40 MS/s
   struct Chunk {
-    std::vector<std::complex<float>> x;
+    Samples x;
     double fs = 0, centre = 0;
     uint32_t gen = 0;
     uint32_t watch = 0; // the watch it was pushed under (an older watch's chunks are dropped)
@@ -109,10 +113,9 @@ private:
   std::atomic<bool> _span_ok{true};   // the last bank seen was one the kind decodes
   std::atomic<uint64_t> _dropped{0};
 
-  mutable std::mutex _m; // queue, pool, params, status
+  mutable std::mutex _m; // queue, watch, status
   std::condition_variable _cv;
   std::deque<Chunk> _q;
-  std::vector<std::vector<std::complex<float>>> _pool;
   nlohmann::json _status;
   bool _stopped = false; // a stop since the loop last looked (it clears a failed watch's error)
   bool _quit = false;

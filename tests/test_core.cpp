@@ -1528,6 +1528,34 @@ static void test_video_follow() {
   }
 }
 
+// The sample pool (samples.h): a buffer comes back to the pool when its last holder lets go, and the
+// next get() reuses it; buffers beyond `keep` are freed; a buffer may outlive its pool.
+static void test_sample_pool() {
+  Samples kept;
+  {
+    SamplePool pool(1);
+    auto a = pool.get(100);
+    const void *pa = a->data();
+    (*a)[0] = {1, 2};
+    Samples s1 = a, s2 = a; // (the Wi-Fi finder and a tap)
+    a.reset();
+    s1.reset();
+    CHECK(pool.get(10)->data() != pa); // still held: a new buffer
+    s2.reset();                        // the last one: back to the pool
+    auto b = pool.get(100);
+    CHECK(b->data() == pa && b->size() == 100);
+    auto c = pool.get(5), d = pool.get(5);
+    const void *pc = c->data(), *pd = d->data();
+    c.reset();
+    d.reset(); // keep 1: only c's is kept
+    auto e = pool.get(5);
+    CHECK(e->data() == pc && pd != pc);
+    kept = std::move(b);
+  }
+  CHECK(kept->size() == 100); // the pool is gone; its buffer is fine
+  kept.reset();
+}
+
 // Taps (tap.h), with a kind of its own: nothing before watch(); path A's samples reach a decoder made
 // with the signal's offset from the run's centre; a new run (gen) makes a new decoder, a new watch too;
 // a gapped bank or a rate the kind does not take reads "span", a signal outside the span "outside";
@@ -1541,12 +1569,15 @@ static void test_tap() {
   std::vector<Made> made;
   std::atomic<uint64_t> fed{0};
   std::atomic<int> first_i{0};
+  std::atomic<const void *> seen{nullptr}; // the samples the decoder was fed: the pushed ones, not a copy
   struct Dec : TapDecoder {
     std::atomic<uint64_t> *fed;
     std::atomic<int> *first_i;
+    std::atomic<const void *> *seen;
     BinarySink out;
     bool first = true;
     void feed(const std::complex<float> *x, size_t n) override {
+      *seen = x;
       if (first)
         *first_i = static_cast<int>(std::lround(x[0].real()));
       first = false;
@@ -1566,6 +1597,7 @@ static void test_tap() {
     d->out = out;
     d->fed = &fed;
     d->first_i = &first_i;
+    d->seen = &seen;
     return d;
   };
   k.check = [](const nlohmann::json &p) {
@@ -1585,6 +1617,7 @@ static void test_tap() {
   const auto raw = tone_bank(1e6, 40e6, 1000, 0, false);
   std::vector<std::complex<float>> bank(8192);
   Spectrum::unpack(raw.data(), bank.size(), 0, false, bank.data());
+  const Samples sbank = std::make_shared<const std::vector<std::complex<float>>>(bank);
   wsdr::BankMeta meta;
   meta.fs = 40e6;
   meta.centre_hz = 5800e6;
@@ -1602,7 +1635,7 @@ static void test_tap() {
     std::lock_guard<std::mutex> l(m);
     return ev.empty() ? nlohmann::json() : ev.back();
   };
-  t.push(bank.data(), bank.size(), meta); // off: nothing
+  t.push(sbank, meta); // off: nothing
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   CHECK(n_made() == 0 && fed == 0);
   bool threw = false;
@@ -1615,10 +1648,11 @@ static void test_tap() {
   const uint32_t id1 = t.watch(5803e6, {{"mode", "am"}});
   CHECK(t.on());
   for (int i = 0; i < 3; i++)
-    t.push(bank.data(), bank.size(), meta);
+    t.push(sbank, meta);
   CHECK(wait([&] { return fed == 3 * 8192; }));
   CHECK(n_made() == 1 && std::abs(made[0].shift - 3e6) < 1 && made[0].fs == 40e6 && made[0].mode == "am");
   CHECK(first_i == 1000); // path A's first sample: the tone at phase 0
+  CHECK(seen == sbank->data()); // (shared with the tap's thread: no copy)
   CHECK(frame_watch == id1 && frame_slot == 1); // (frames carry their watch and view)
   CHECK(wait([&] { return last_ev().value("state", "") == "locked"; }));
   const nlohmann::json e = last_ev();
@@ -1628,19 +1662,19 @@ static void test_tap() {
   const uint32_t id2 = t.watch(5804e6, {{"mode", "fm"}});
   CHECK(id2 == id1 + 1);
   CHECK(wait([&] { return last_ev().value("watch", 0u) == id2; }));
-  t.push(bank.data(), bank.size(), meta);
+  t.push(sbank, meta);
   CHECK(wait([&] { return n_made() == 2; }));
   CHECK(std::abs(made[1].shift - 4e6) < 1 && made[1].mode == "fm");
   CHECK(wait([&] { return frame_watch == id2; }));
   meta.gen = 2; // a retune: a new decoder
-  t.push(bank.data(), bank.size(), meta);
+  t.push(sbank, meta);
   CHECK(wait([&] { return n_made() == 3; }));
   meta.centre_hz = 5824e6; // the signal (5804 MHz) 20 MHz below the centre: outside (20 MHz less the 1 MHz margin)
   meta.gen = 3;
-  t.push(bank.data(), bank.size(), meta);
+  t.push(sbank, meta);
   CHECK(wait([&] { return last_ev().value("state", "") == "outside"; }));
   meta.gapped = true;
-  t.push(bank.data(), bank.size(), meta);
+  t.push(sbank, meta);
   CHECK(wait([&] { return last_ev().value("state", "") == "span"; }));
   CHECK(n_made() == 4); // (the gapped bank never reached a decoder)
   CHECK(t.stop(id1) == id2 && t.on()); // a stop of a replaced watch: nothing (the current one goes on)
@@ -1671,10 +1705,10 @@ static void test_tap() {
   };
   const uint32_t bid = b.watch(5803e6);
   meta.gapped = false;
-  b.push(bank.data(), bank.size(), meta);
+  b.push(sbank, meta);
   CHECK(wait([&] { return bev_last().value("state", "") == "error"; }));
   CHECK(!b.on() && bev_last()["on"] == false && bev_last()["error"] == "no room" && bev_last()["watch"] == bid);
-  b.push(bank.data(), bank.size(), meta); // off: ignored
+  b.push(sbank, meta); // off: ignored
   CHECK(b.stop(bid) == bid); // stopping the failed watch: its error is over (a reload must not show it)
   CHECK(wait([&] { return bev_last().value("state", "") != "error"; }));
   CHECK(bev_last()["on"] == false && bev_last()["watch"] == bid && b.status().value("state", "") != "error");
@@ -2029,6 +2063,7 @@ int main(int argc, char **argv) {
   test_signals();
   test_video();
   test_video_follow();
+  test_sample_pool();
   test_tap();
   test_video_tap();
   test_ble();

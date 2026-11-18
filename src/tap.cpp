@@ -44,33 +44,21 @@ uint32_t Tap::watch(double freq, const json &params) {
   return id;
 }
 
-void Tap::push(const std::complex<float> *x, size_t n, const wsdr::BankMeta &m) {
+void Tap::push(const Samples &x, const wsdr::BankMeta &m) {
   if (!on())
     return;
   const bool ok = accepts(m);
   _span_ok = ok;
   if (!ok || !x)
     return;
-  Chunk c;
-  {
-    std::lock_guard<std::mutex> l(_m);
-    if (_q.size() >= 512) { // ~100 ms at 40 MS/s
-      _dropped++;
-      return;
-    }
-    if (!_pool.empty()) {
-      c.x = std::move(_pool.back());
-      _pool.pop_back();
-    }
-    c.watch = _watch.id;
-  }
-  c.x.assign(x, x + n);
-  c.fs = m.fs;
-  c.centre = m.centre_hz;
-  c.gen = m.gen;
   std::lock_guard<std::mutex> l(_m);
-  _q.push_back(std::move(c));
-  _cv.notify_one();
+  if (_q.size() >= kMaxQueued) {
+    _dropped++;
+    return;
+  }
+  _q.push_back({x, m.fs, m.centre_hz, m.gen, _watch.id});
+  if (_q.size() == kBatch) // (a batch ready: wake the tap's thread; more while it works need no wake)
+    _cv.notify_one();
 }
 
 uint32_t Tap::stop(uint32_t id) {
@@ -93,15 +81,17 @@ void Tap::loop() {
   double fs = 0, centre = 0, sent = 0;
   int was = 0; // what the last status said: 0 off, 1 on, 2 failed
   std::string error;
+  std::deque<Chunk> batch;
   for (;;) {
-    Chunk c;
-    Watch w; // the watch this chunk is for: freq, params and id read together
+    Watch w; // the watch this batch is for: freq, params and id read together
     bool fresh = false; // a new watch: its status goes out now
     {
       std::unique_lock<std::mutex> l(_m);
-      // (woken by a new watch, and by a stop: its off status goes out at once)
-      _cv.wait_for(l, std::chrono::milliseconds(100),
-                   [&] { return _quit || !_q.empty() || _watch.id != id || _stopped || (_watch.freq > 0) != (was == 1); });
+      // Woken by a batch of chunks, a new watch, and a stop (its off status goes out at once). Fewer
+      // than a batch go after a short wait (a stream that stops), and the status needs a turn anyway.
+      _cv.wait_for(l, _q.empty() ? std::chrono::milliseconds(100) : std::chrono::milliseconds(20), [&] {
+        return _quit || _q.size() >= kBatch || _watch.id != id || _stopped || (_watch.freq > 0) != (was == 1);
+      });
       if (_quit)
         return;
       if (_watch.id != id) { // a new watch (or a stop): a new decoder
@@ -114,15 +104,7 @@ void Tap::loop() {
         _stopped = false;
         error.clear();
       }
-      if (!_q.empty()) {
-        c = std::move(_q.front());
-        _q.pop_front();
-        if (c.watch != _watch.id) { // pushed for an earlier watch: not this one's to decode
-          if (_pool.size() < 16)
-            _pool.push_back(std::move(c.x));
-          c.x = {};
-        }
-      }
+      batch.swap(_q); // (all of it: one lock a batch)
       w = _watch;
     }
     id = w.id;
@@ -130,7 +112,9 @@ void Tap::loop() {
     if (!on)
       dec.reset();
     try {
-      if (!c.x.empty() && on) {
+      for (const Chunk &c : batch) {
+        if (!on || c.watch != w.id) // pushed for an earlier watch: not this one's to decode
+          continue;
         if (!dec || c.gen != gen || c.fs != fs || c.centre != centre) { // a new stream run: a new decoder
           gen = c.gen;
           fs = c.fs;
@@ -144,7 +128,7 @@ void Tap::loop() {
             _out(std::move(f));
           });
         }
-        dec->feed(c.x.data(), c.x.size());
+        dec->feed(c.x->data(), c.x->size());
       }
     } catch (const std::exception &e) { // (a decoder that fails stops its tap; the backend goes on)
       error = e.what();
@@ -156,11 +140,7 @@ void Tap::loop() {
         _q.clear();
       }
     }
-    if (c.x.capacity()) {
-      std::lock_guard<std::mutex> l(_m);
-      if (_pool.size() < 16)
-        _pool.push_back(std::move(c.x));
-    }
+    batch.clear(); // (the samples go back to their pool once every consumer is done with them)
     // the status: for every new watch, whenever it goes on / off / fails, and twice a second while on
     const double now = now_s();
     const int cur = !error.empty() ? 2 : on ? 1 : 0;

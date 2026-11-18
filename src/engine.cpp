@@ -815,7 +815,7 @@ void Engine::wifi_loop() {
         _wq.pop_front();
       }
     }
-    if (!w.x.empty()) {
+    if (w.x) {
       // a new run, or a gap in the samples (banks dropped): no frame spans it
       if (w.gen != gen || w.fs != fs || w.centre != centre || w.seq != next) {
         gen = w.gen;
@@ -825,11 +825,9 @@ void Engine::wifi_loop() {
         sf.reset(fs, centre);
       }
       next = w.seq + 1;
-      dec.feed(w.x.data(), w.x.size(), w.t_end, found);
-      sf.feed(w.x.data(), w.x.size(), w.t_end, other);
-      std::lock_guard<std::mutex> l(_wm);
-      if (_wpool.size() < 8)
-        _wpool.push_back(std::move(w.x));
+      dec.feed(w.x->data(), w.x->size(), w.t_end, found);
+      sf.feed(w.x->data(), w.x->size(), w.t_end, other);
+      w.x.reset(); // (back to the pool once the taps are done with it too)
     }
     const double now = now_s();
     const uint64_t d = _wifi_dropped.load();
@@ -900,7 +898,6 @@ void Engine::dsp_loop() {
   uint32_t gen = ~0u, cfg = ~0u;
   std::vector<int16_t> iq(2 * 8192);
   std::vector<wsdr::cf> tmp(8192);
-  std::vector<wsdr::cf> pa; // path A of the bank for the taps, when the Wi-Fi finder takes none
   double busy = 0;
   auto win = clk::now();
   // Ask the command thread to stop the recording (once); stop feeding it right away.
@@ -940,46 +937,33 @@ void Engine::dsp_loop() {
         _rows++;
         _cb.row(encode_row(r, now_s(), _slot));
       });
-      // Path A, unpacked once for the Wi-Fi finder and the taps that want it (straight into the Wi-Fi
-      // chunk when it has room; not at all when nobody takes it).
-      // Wi-Fi frames: a copy of path A, stamped on the rows' clock (a row is stamped when its last
-      // samples are processed, here, so a frame lands in the row that holds it)
+      // Path A, unpacked once into a pooled buffer that the Wi-Fi finder and the taps that want it share
+      // (read-only, no copies; not unpacked at all when nobody takes it). Wi-Fi frames are stamped on the
+      // rows' clock (a row is stamped when its last samples are processed, here, so a frame lands in
+      // the row that holds it).
       {
         const bool wifi = _wifi_on && !b->meta.gapped && continuous_rate(b->meta.fs);
         bool tapping = false;
         for (const auto &t : _taps)
           tapping = tapping || t->accepts(b->meta);
-        const size_t na = b->bytes / 8;
-        const wsdr::cf *a = nullptr;
-        WifiChunk w;
         bool room = false;
         if (wifi) {
           std::lock_guard<std::mutex> l(_wm);
           room = _wq.size() < 1024; // ~200 ms at 40 MS/s: a burst of traffic is decoded after it, not dropped
-          if (room && !_wpool.empty()) {
-            w.x = std::move(_wpool.back());
-            _wpool.pop_back();
-          }
         }
         if (wifi && !room)
           _wifi_dropped++;
-        if (room) {
-          w.x.resize(na);
-          Spectrum::unpack(b->data.data(), na, 0, b->meta.cu, w.x.data());
-          a = w.x.data();
-        } else if (tapping) {
-          pa.resize(na);
-          Spectrum::unpack(b->data.data(), na, 0, b->meta.cu, pa.data());
-          a = pa.data();
+        Samples a;
+        if (room || tapping) {
+          const size_t na = b->bytes / 8;
+          auto buf = _samples.get(na);
+          Spectrum::unpack(b->data.data(), na, 0, b->meta.cu, buf->data());
+          a = std::move(buf);
         }
-        for (const auto &t : _taps) // (before the chunk moves to the Wi-Fi thread)
-          t->push(a, na, b->meta);
+        for (const auto &t : _taps)
+          t->push(a, b->meta);
         if (room) {
-          w.t_end = now_s();
-          w.fs = b->meta.fs;
-          w.centre = b->meta.centre_hz;
-          w.gen = b->meta.gen;
-          w.seq = b->meta.seq;
+          WifiChunk w{a, now_s(), b->meta.fs, b->meta.centre_hz, b->meta.gen, b->meta.seq};
           std::lock_guard<std::mutex> l(_wm);
           _wq.push_back(std::move(w));
           _wcv.notify_one();
