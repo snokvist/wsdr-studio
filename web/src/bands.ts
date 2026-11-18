@@ -88,10 +88,11 @@ export function sweepPlan(range: Range, dev: Device | undefined, gappedOk: boole
     if (last && lo <= last[1] + 5e6) last[1] = Math.max(last[1], hi);
     else stretches.push([lo, hi]);
   }
-  // a 40 MHz span centres within 2422-2462 / 5090-6155 MHz, an 80 MHz one within 2442-2462 / 5110-6135 MHz
+  // 2.4 GHz: any span centres on any channel; 5 GHz: a 40 MHz span within 5090-6155 MHz, an 80 MHz
+  // one within 5110-6135 MHz
   const clamp = (c: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, c));
   const tunable = (c: number) =>
-    fs < 40e6 ? c : fs >= 80e6 ? (c < 3.7e9 ? clamp(c, 2442e6, 2462e6) : clamp(c, 5110e6, 6135e6)) : c < 3.7e9 ? clamp(c, 2422e6, 2462e6) : clamp(c, 5090e6, 6155e6);
+    fs < 40e6 || c < 3.7e9 ? c : fs >= 80e6 ? clamp(c, 5110e6, 6135e6) : clamp(c, 5090e6, 6155e6);
   const centres: number[] = [];
   for (const [lo, hi] of stretches) {
     // the outer steps first, a MHz inside the span's flat part at the stretch's ends (its edge

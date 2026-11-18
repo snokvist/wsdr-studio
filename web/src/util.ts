@@ -34,7 +34,7 @@ export const fmtDur = (s: number) => (s >= 3600 ? `${(s / 3600).toFixed(1)} h` :
 export const fmtClock = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 // The radio tunes 2.4 GHz channels 1-13 (2412-2472, 5 MHz apart) and 14 (2484), and 5 GHz in 5 MHz
 // steps from 5080 to 6165 MHz. The nearest tunable centre:
-// (At a 40 MHz span the radio centres within 2422-2462 / 5090-6155 MHz; the request stays and is marked.)
+// (At a 40 MHz span a 5 GHz centre stays within 5090-6155 MHz; the request stays and is marked.)
 export const snap = (f: number) => {
   if (f < 3.7e9) {
     if (f > 2478e6) return 2484e6;

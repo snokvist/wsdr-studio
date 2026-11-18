@@ -557,12 +557,13 @@ wsdr::RxSettings Engine::hw_for(const wsdr::RxSettings &v) const {
     return v; // off the 5 MHz grid (the UI never sends that): no offset, the notch stays in view
   // 40 MHz capture (the 8822C's BW40 filter is flat to +-17 MHz), radio 10 MHz above the view (below
   // at the top of a band): the view is [-20, 0] or [-15, -5] MHz from the radio's centre, the notch
-  // sits at the channel edge or outside. 40 MHz centres: 2422-2462 and 5090-6155 MHz.
-  const auto ok = [](double f) { return (f >= 2422e6 && f <= 2462e6) || (f >= 5090e6 && f <= 6155e6); };
+  // sits at the channel edge or outside. 5 GHz 40 MHz centres: 5090-6155 MHz (2.4 GHz never gets here:
+  // its channels are off the 5 MHz grid checked above).
+  const auto ok = [](double f) { return f >= 5090e6 && f <= 6155e6; };
   const double up = std::round((v.freq + 10e6) / 5e6) * 5e6, dn = std::round((v.freq - 10e6) / 5e6) * 5e6;
   const double c = ok(up) ? up : ok(dn) ? dn : 0;
   if (c == 0)
-    return v; // no room (2.4 GHz channel 14): the notch stays in view
+    return v; // outside the 5 GHz band (a script's request): no room, the notch stays in view
   wsdr::RxSettings h = v;
   h.rate_sel = 1;
   h.wide = true;
@@ -585,7 +586,7 @@ void Engine::set_view(const wsdr::RxSettings &view, const wsdr::RxSettings &hw) 
   }
   const int w = wsdr::Receiver::width_of(hw, cu);
   Crop c;
-  c.hw_centre = wsdr::Receiver::centre_of(wsdr::Receiver::channel_for(hw.freq, w), w);
+  c.hw_centre = wsdr::Receiver::centre_of(wsdr::Receiver::channel_for(hw.freq, w));
   c.hw_fs = wsdr::Receiver::rate_of(hw.rate_sel);
   if (offset) {
     const double half = wsdr::Receiver::rate_of(view.rate_sel) / 2;
@@ -659,7 +660,7 @@ json Engine::status() const {
     if (hw.freq != v.freq || hw.rate_sel != v.rate_sel) { // offset-tuned: report the view, and the radio
       j["rx"]["offset"] = true;
       const int w = wsdr::Receiver::width_of(hw, cu); // the radio's settings (not the run still ending)
-      j["rx"]["hw_centre"] = wsdr::Receiver::centre_of(wsdr::Receiver::channel_for(hw.freq, w), w);
+      j["rx"]["hw_centre"] = wsdr::Receiver::centre_of(wsdr::Receiver::channel_for(hw.freq, w));
       j["rx"]["hw_fs"] = wsdr::Receiver::rate_of(hw.rate_sel);
       j["rx"]["centre"] = v.freq;
       j["rx"]["fs"] = wsdr::Receiver::rate_of(v.rate_sel);
