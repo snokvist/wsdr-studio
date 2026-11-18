@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "engine.h"
+#include "video.h"
 #include "usbmode.h"
 #include "signals.h"
 #include "wifi.h"
@@ -74,6 +75,8 @@ Engine::Engine(Callbacks cb, std::string record_dir, int slot, std::shared_ptr<C
       _rec(std::move(record_dir)) {
   static std::once_flag warm; // measured FFT plans for all sizes, once per process, off the DSP thread
   std::call_once(warm, [] { std::thread(Spectrum::warm_plans).detach(); });
+  for (TapKind k : {video_tap()}) // (an audio receiver would join here)
+    _taps.push_back(std::make_unique<Tap>(std::move(k), _slot, _cb.row, _cb.event));
   _cmd = std::thread([this] { cmd_loop(); });
   _dsp = std::thread([this] { dsp_loop(); });
   _wifi = std::thread([this] { wifi_loop(); });
@@ -245,6 +248,31 @@ json Engine::run(const json &c) {
     if (caps_changed)
       _cb.event(caps()); // the spans' captured rates (hw_fs) changed
     return {};
+  }
+  if (cmd == "tap") { // follow one signal with a tap: {"kind", "freq" (Hz; 0 stops: "watch" names the one to stop), "params"}
+    if (!c.contains("kind") || !c["kind"].is_string())
+      throw CmdError("bad_request", "kind must be a string");
+    Tap *t = tap(c["kind"].get<std::string>());
+    if (!t)
+      throw CmdError("bad_request", "no tap of kind " + c["kind"].get<std::string>());
+    const double f = num(c, "freq", 0, 6.2e9);
+    if (f > 0) {
+      const auto r = rx();
+      if (!r || !r->is_open())
+        throw CmdError("closed", "no adapter open");
+      if (f < 2.3e9)
+        throw CmdError("bad_request", "freq must be 0 or 2.3-6.2 GHz");
+    }
+    if (f == 0 && c.contains("watch")) { // stop that watch, unless another has replaced it meanwhile
+      if (!c["watch"].is_number_unsigned())
+        throw CmdError("bad_request", "watch must be a watch id");
+      return {{"watch", t->stop(c["watch"].get<uint32_t>())}};
+    }
+    try {
+      return {{"watch", t->watch(f, c.value("params", json::object()))}}; // (its status events carry it)
+    } catch (const std::invalid_argument &e) {
+      throw CmdError("bad_request", e.what());
+    }
   }
   if (cmd == "points") { // one frame's equalised points (the frame inspector)
     if (!c.contains("frame") || !c["frame"].is_number_unsigned())
@@ -529,8 +557,24 @@ void Engine::open_adapter(uint16_t pid, const json &c) {
 }
 
 // why: a recording still running ends with this reason (it is always saved)
+Tap *Engine::tap(const std::string &kind) const {
+  for (const auto &t : _taps)
+    if (t->name() == kind)
+      return t.get();
+  return nullptr;
+}
+
+std::vector<json> Engine::tap_status() const {
+  std::vector<json> v;
+  for (const auto &t : _taps)
+    v.push_back(t->status());
+  return v;
+}
+
 void Engine::close_adapter(const std::string &why) {
   stop_recording(why);
+  for (const auto &t : _taps)
+    t->watch(0); // nothing to follow without an adapter
   std::shared_ptr<wsdr::Receiver> old;
   {
     std::lock_guard<std::mutex> l(_rxm);
@@ -858,6 +902,7 @@ void Engine::dsp_loop() {
   uint32_t gen = ~0u, cfg = ~0u;
   std::vector<int16_t> iq(2 * 8192);
   std::vector<wsdr::cf> tmp(8192);
+  std::vector<wsdr::cf> pa; // path A of the bank for the taps, when the Wi-Fi finder takes none
   double busy = 0;
   auto win = clk::now();
   // Ask the command thread to stop the recording (once); stop feeding it right away.
@@ -897,12 +942,20 @@ void Engine::dsp_loop() {
         _rows++;
         _cb.row(encode_row(r, now_s(), _slot));
       });
+      // Path A, unpacked once for the Wi-Fi finder and the taps that want it (straight into the Wi-Fi
+      // chunk when it has room; not at all when nobody takes it).
       // Wi-Fi frames: a copy of path A, stamped on the rows' clock (a row is stamped when its last
       // samples are processed, here, so a frame lands in the row that holds it)
-      if (_wifi_on && !b->meta.gapped && (std::abs(b->meta.fs - 40e6) < 1e3 || std::abs(b->meta.fs - 20e6) < 1e3)) {
+      {
+        const bool wifi = _wifi_on && !b->meta.gapped && (std::abs(b->meta.fs - 40e6) < 1e3 || std::abs(b->meta.fs - 20e6) < 1e3);
+        bool tapping = false;
+        for (const auto &t : _taps)
+          tapping = tapping || t->accepts(b->meta);
+        const size_t na = b->bytes / 8;
+        const wsdr::cf *a = nullptr;
         WifiChunk w;
-        bool room = true;
-        {
+        bool room = false;
+        if (wifi) {
           std::lock_guard<std::mutex> l(_wm);
           room = _wq.size() < 1024; // ~200 ms at 40 MS/s: a burst of traffic is decoded after it, not dropped
           if (room && !_wpool.empty()) {
@@ -910,22 +963,30 @@ void Engine::dsp_loop() {
             _wpool.pop_back();
           }
         }
-        if (!room) {
+        if (wifi && !room)
           _wifi_dropped++;
-          goto wifi_done;
+        if (room) {
+          w.x.resize(na);
+          Spectrum::unpack(b->data.data(), na, 0, b->meta.cu, w.x.data());
+          a = w.x.data();
+        } else if (tapping) {
+          pa.resize(na);
+          Spectrum::unpack(b->data.data(), na, 0, b->meta.cu, pa.data());
+          a = pa.data();
         }
-        w.x.resize(b->bytes / 8);
-        Spectrum::unpack(b->data.data(), w.x.size(), 0, b->meta.cu, w.x.data());
-        w.t_end = now_s();
-        w.fs = b->meta.fs;
-        w.centre = b->meta.centre_hz;
-        w.gen = b->meta.gen;
-        w.seq = b->meta.seq;
-        std::lock_guard<std::mutex> l(_wm);
-        _wq.push_back(std::move(w));
-        _wcv.notify_one();
+        for (const auto &t : _taps) // (before the chunk moves to the Wi-Fi thread)
+          t->push(a, na, b->meta);
+        if (room) {
+          w.t_end = now_s();
+          w.fs = b->meta.fs;
+          w.centre = b->meta.centre_hz;
+          w.gen = b->meta.gen;
+          w.seq = b->meta.seq;
+          std::lock_guard<std::mutex> l(_wm);
+          _wq.push_back(std::move(w));
+          _wcv.notify_one();
+        }
       }
-    wifi_done:;
       // Every file has one centre, one rate and no gaps. Banks of the run the recording belongs to go
       // in; older ones (still queued from before a retune) are skipped; a newer run, or a gap in the
       // bank sequence (the DSP fell behind and the ring dropped banks), ends the file.

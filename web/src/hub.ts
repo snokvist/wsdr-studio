@@ -3,6 +3,7 @@
 // view (rows also reach the other view, for its overlay); untagged events go to everyone. The latest
 // state events are kept, so a view that appears later (entering a two-adapter mode) starts current.
 import { Client, type Row } from './protocol';
+import type { TapFrame } from './taps/index';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export type Sub = {
@@ -10,17 +11,18 @@ export type Sub = {
   row?: (r: Row) => void;         // this slot's rows
   other?: (r: Row) => void;       // the other slot's rows
   all?: (r: Row) => void;         // every row (the stitched Panorama plot)
+  tap?: (f: TapFrame) => void;    // this slot's tap frames (taps/index.ts)
   event?: (e: any) => void;
   connection?: (up: boolean) => void;
   giveUp?: (why: string) => void;
 };
 
-const KEPT = new Set(['hello', 'devices', 'caps', 'settings', 'status']);
+const KEPT = new Set(['hello', 'devices', 'caps', 'settings', 'status', 'tap']);
 
 export class Hub {
   private client: Client | null = null;
   private subs = new Set<Sub>();
-  private kept = new Map<string, any>(); // `${slot}:${type}` -> the latest event
+  private kept = new Map<string, any>(); // `${slot}:${type}` (a tap's: `:${kind}` added) -> the latest event
   private gen = 0;
   private up = false;
   private fatal: string | null = null;
@@ -38,6 +40,10 @@ export class Hub {
             if (s.slot === r.slot) s.row?.(r);
             else if (s.slot !== null) s.other?.(r);
           }
+        };
+        c.onTap = (f) => {
+          if (gen !== this.gen) return;
+          for (const s of this.subs) if (s.slot === f.slot) s.tap?.(f);
         };
         c.onConnection = (up) => {
           if (gen !== this.gen) return;
@@ -58,7 +64,7 @@ export class Hub {
             }
           }
           if (KEPT.has(e.type)) {
-            const k = `${e.slot ?? '-'}:${e.type}`;
+            const k = `${e.slot ?? '-'}:${e.type}${e.type === 'tap' ? `:${e.kind}` : ''}`; // (one per tap kind)
             // settings may carry rx or dsp alone: keep both
             this.kept.set(k, e.type === 'settings' ? { ...this.kept.get(k), ...e } : e);
           }
@@ -88,8 +94,8 @@ export class Hub {
     if (this.fatal) s.giveUp?.(this.fatal);
     if (this.up) s.connection?.(true);
     for (const type of KEPT)
-      for (const [k, e] of this.kept)
-        if (k.endsWith(':' + type) && (s.slot === null || e.slot === undefined || e.slot === s.slot)) s.event?.(e);
+      for (const e of this.kept.values())
+        if (e.type === type && (s.slot === null || e.slot === undefined || e.slot === s.slot)) s.event?.(e);
     return () => this.subs.delete(s);
   }
 

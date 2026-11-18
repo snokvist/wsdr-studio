@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Client side of protocol v1 (src/protocol.h): JSON commands with ids, JSON events, binary rows.
+// Client side of protocol v1 (src/protocol.h): JSON commands with ids, JSON events, binary rows, and
+// the taps' binary frames (taps/index.ts).
+import { tapFrame, type TapFrame } from './taps/index';
 
 // gapped: a wide span the link cannot carry continuously (8812CU on USB 2): one 8192-sample capture,
 // then a ~1.5 ms gap while it ships. Spectrum yes, continuous IQ (recording) no.
@@ -94,6 +96,7 @@ export class Client {
   private closed = false;
   onEvent: (e: any) => void = () => {};
   onRow: (r: Row) => void = () => {};
+  onTap: (f: TapFrame) => void = () => {};
   onConnection: (up: boolean) => void = () => {};
   onGiveUp: (why: string) => void = () => {};
   private failures = 0; // connection attempts that never opened, in a row
@@ -144,6 +147,10 @@ export class Client {
       if (m.data instanceof ArrayBuffer) {
         const r = decodeRow(m.data);
         if (r) this.onRow(r);
+        else {
+          const f = tapFrame(m.data);
+          if (f) this.onTap(f);
+        }
         return;
       }
       const e = JSON.parse(m.data as string);

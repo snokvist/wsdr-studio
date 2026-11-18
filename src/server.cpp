@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "server.h"
+#include "protocol.h" // kRowMagic
 
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
@@ -8,6 +9,7 @@
 #include <boost/beast/websocket.hpp>
 
 #include <chrono>
+#include <cstring>
 #include <deque>
 #include <filesystem>
 
@@ -23,6 +25,8 @@ namespace fs = std::filesystem;
 namespace {
 
 constexpr size_t kMaxQueuedBinary = 32;
+constexpr size_t kMaxQueuedTap = 4; // a tap's frames (video fields, ~260 KB each) wait in a queue of their own:
+                                    // a slow page skips fields, never spectrum rows, for them
 constexpr size_t kMaxQueuedText = 1024; // a client this far behind is dropped
 
 bool host_ok(const ServerOptions &o, beast::string_view host) {
@@ -120,20 +124,22 @@ public:
       beast::get_lowest_layer(_ws).socket().close(ignored);
       return;
     }
-    if (bin && _queued_bin >= kMaxQueuedBinary) {
-      // a slow page: the oldest row still waiting goes, so what it gets next is the newest picture
-      // (the front may be in flight: the one after it)
-      _srv.count_drop();
+    const bool tap = bin && !is_row(*bin);
+    if (tap ? _queued_tap >= kMaxQueuedTap : bin && _queued_bin >= kMaxQueuedBinary) {
+      // a slow page: the oldest row (or tap frame) still waiting goes, so what it gets next is the newest
+      // picture (the front may be in flight: the one after it)
+      if (!tap)
+        _srv.count_drop();
       for (auto it = _q.begin() + 1; it != _q.end(); ++it)
-        if (it->bin) {
+        if (it->bin && is_row(*it->bin) != tap) {
+          (tap ? _queued_tap : _queued_bin)--;
           _q.erase(it);
-          _queued_bin--;
           break;
         }
     }
     _q.push_back({std::move(text), std::move(bin)});
     if (_q.back().bin)
-      _queued_bin++;
+      (tap ? _queued_tap : _queued_bin)++;
     if (!_writing)
       write();
   }
@@ -164,8 +170,8 @@ private:
     Out &o = _q.front();
     _ws.binary(o.bin != nullptr);
     auto done = [self = shared_from_this()](beast::error_code ec, size_t) {
-      if (self->_q.front().bin)
-        self->_queued_bin--;
+      if (const auto &b = self->_q.front().bin)
+        (is_row(*b) ? self->_queued_bin : self->_queued_tap)--;
       self->_q.pop_front();
       if (ec) {
         self->close();
@@ -193,7 +199,13 @@ private:
   Server &_srv;
   beast::flat_buffer _buf;
   std::deque<Out> _q;
-  size_t _queued_bin = 0;
+  size_t _queued_bin = 0, _queued_tap = 0; // spectrum rows / taps' frames waiting
+  static bool is_row(const std::vector<uint8_t> &b) {
+    uint32_t m = 0;
+    if (b.size() >= 4)
+      std::memcpy(&m, b.data(), 4);
+    return m == kRowMagic;
+  }
   bool _writing = false, _closed = false;
 };
 

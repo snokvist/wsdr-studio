@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // Unit tests without hardware, plus `--bench`: the DSP at 40 MS/s on synthetic banks, and
-// `--wifi <recording.sigmf-data>`: the Wi-Fi frame finder over a recording, summarised.
+// `--wifi <recording.sigmf-data>`: the Wi-Fi frame finder over a recording, summarised, and
+// `--video <recording.sigmf-data> <MHz> [field.ppm]`: the analog video decoder over one.
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -23,7 +24,13 @@
 #include <filesystem>
 #include <unistd.h>
 #include "signals.h"
+#include "tap.h"
+#include "video.h"
 #include "wifi.h"
+#include "../third_party/kepyur/video.h"
+#include <atomic>
+#include <mutex>
+#include <thread>
 
 #include <nlohmann/json.hpp>
 
@@ -1523,6 +1530,223 @@ static void test_video_follow() {
 
 // A BLE advertisement (ADV_IND from a random address c0:ff:ee:12:34:56 with the name "test-ble"),
 // GFSK (BT 0.5, +-250 kHz) on channel 38 (2426 MHz) 40 kHz off, at 40 MS/s around 2422 MHz: decoded.
+// Taps (tap.h), with a kind of its own: nothing before watch(); path A's samples reach a decoder made
+// with the signal's offset from the run's centre; a new run (gen) makes a new decoder, a new watch too;
+// a gapped bank or a rate the kind does not take reads "span", a signal outside the span "outside";
+// params are checked; watch(0) stops it (one status event, on false).
+static void test_tap() {
+  struct Made {
+    double fs, shift;
+    std::string mode;
+  };
+  std::mutex m;
+  std::vector<Made> made;
+  std::atomic<uint64_t> fed{0};
+  std::atomic<int> first_i{0};
+  struct Dec : TapDecoder {
+    std::atomic<uint64_t> *fed;
+    std::atomic<int> *first_i;
+    BinarySink out;
+    bool first = true;
+    void feed(const std::complex<float> *x, size_t n) override {
+      if (first)
+        *first_i = static_cast<int>(std::lround(x[0].real()));
+      first = false;
+      *fed += n;
+      out(std::vector<uint8_t>(16, 0)); // a frame per feed: the Tap stamps its watch at offset 8
+    }
+    nlohmann::json stats() const override { return {{"state", "locked"}, {"own", 7}}; }
+  };
+  TapKind k;
+  k.name = "test";
+  k.rate_ok = [](double fs) { return std::abs(fs - 40e6) < 1; };
+  k.margin_hz = 1e6;
+  k.make = [&](double fs, double shift, const nlohmann::json &p, int, const BinarySink &out) -> std::unique_ptr<TapDecoder> {
+    std::lock_guard<std::mutex> l(m);
+    made.push_back({fs, shift, p.value("mode", "")});
+    auto d = std::make_unique<Dec>();
+    d->out = out;
+    d->fed = &fed;
+    d->first_i = &first_i;
+    return d;
+  };
+  k.check = [](const nlohmann::json &p) {
+    if (p.contains("mode") && p["mode"] != "fm" && p["mode"] != "am")
+      throw std::invalid_argument("mode must be fm or am");
+  };
+  std::vector<nlohmann::json> ev;
+  std::atomic<uint32_t> frame_watch{0};
+  Tap t(k, 1, [&](std::vector<uint8_t> &&f) {
+    uint32_t w;
+    std::memcpy(&w, f.data() + 8, 4);
+    frame_watch = w;
+  }, [&](const nlohmann::json &e) {
+    std::lock_guard<std::mutex> l(m);
+    ev.push_back(e);
+  });
+  const auto raw = tone_bank(1e6, 40e6, 1000, 0, false);
+  std::vector<std::complex<float>> bank(8192);
+  Spectrum::unpack(raw.data(), bank.size(), 0, false, bank.data());
+  wsdr::BankMeta meta;
+  meta.fs = 40e6;
+  meta.centre_hz = 5800e6;
+  meta.gen = 1;
+  const auto wait = [&](const std::function<bool()> &f) {
+    for (int i = 0; i < 300 && !f(); i++)
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    return f();
+  };
+  const auto n_made = [&] {
+    std::lock_guard<std::mutex> l(m);
+    return made.size();
+  };
+  const auto last_ev = [&] {
+    std::lock_guard<std::mutex> l(m);
+    return ev.empty() ? nlohmann::json() : ev.back();
+  };
+  t.push(bank.data(), bank.size(), meta); // off: nothing
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  CHECK(n_made() == 0 && fed == 0);
+  bool threw = false;
+  try {
+    t.watch(5803e6, {{"mode", "usb"}});
+  } catch (const std::invalid_argument &) {
+    threw = true;
+  }
+  CHECK(threw && !t.on());
+  const uint32_t id1 = t.watch(5803e6, {{"mode", "am"}});
+  CHECK(t.on());
+  for (int i = 0; i < 3; i++)
+    t.push(bank.data(), bank.size(), meta);
+  CHECK(wait([&] { return fed == 3 * 8192; }));
+  CHECK(n_made() == 1 && std::abs(made[0].shift - 3e6) < 1 && made[0].fs == 40e6 && made[0].mode == "am");
+  CHECK(first_i == 1000); // path A's first sample: the tone at phase 0
+  CHECK(frame_watch == id1); // (frames carry their watch)
+  CHECK(wait([&] { return last_ev().value("state", "") == "locked"; }));
+  const nlohmann::json e = last_ev();
+  CHECK(e["kind"] == "test" && e["on"] == true && e["own"] == 7 && std::abs(e["freq"].get<double>() - 5803e6) < 1 &&
+        e["params"]["mode"] == "am" && e["watch"] == id1);
+  // a new watch while on: a new id, its status at once (not at the next half second), a new decoder
+  const uint32_t id2 = t.watch(5804e6, {{"mode", "fm"}});
+  CHECK(id2 == id1 + 1);
+  CHECK(wait([&] { return last_ev().value("watch", 0u) == id2; }));
+  t.push(bank.data(), bank.size(), meta);
+  CHECK(wait([&] { return n_made() == 2; }));
+  CHECK(std::abs(made[1].shift - 4e6) < 1 && made[1].mode == "fm");
+  CHECK(wait([&] { return frame_watch == id2; }));
+  meta.gen = 2; // a retune: a new decoder
+  t.push(bank.data(), bank.size(), meta);
+  CHECK(wait([&] { return n_made() == 3; }));
+  meta.centre_hz = 5824e6; // the signal (5804 MHz) 20 MHz below the centre: outside (20 MHz less the 1 MHz margin)
+  meta.gen = 3;
+  t.push(bank.data(), bank.size(), meta);
+  CHECK(wait([&] { return last_ev().value("state", "") == "outside"; }));
+  meta.gapped = true;
+  t.push(bank.data(), bank.size(), meta);
+  CHECK(wait([&] { return last_ev().value("state", "") == "span"; }));
+  CHECK(n_made() == 4); // (the gapped bank never reached a decoder)
+  CHECK(t.stop(id1) == id2 && t.on()); // a stop of a replaced watch: nothing (the current one goes on)
+  const auto t_stop = std::chrono::steady_clock::now();
+  CHECK(t.stop(id2) == id2); // a stop: the id of the watch it ends, which its off status carries
+  CHECK(wait([&] { return last_ev().value("on", true) == false; }));
+  CHECK(last_ev()["watch"] == id2);
+  CHECK(std::chrono::steady_clock::now() - t_stop < std::chrono::milliseconds(60)); // (at once, not at the next tick)
+  CHECK(t.status()["on"] == false && !t.status().contains("state"));
+  CHECK(Tap(k, 0, [](std::vector<uint8_t> &&) {}, [](const nlohmann::json &) {}).status()["watch"] == 0); // (before any watch)
+  const size_t evs = ev.size();
+  std::this_thread::sleep_for(std::chrono::milliseconds(700));
+  CHECK(ev.size() == evs); // off: no more status
+  // a decoder that throws: the tap goes off with an error status; the thread (and the backend) go on
+  TapKind bad = k;
+  bad.name = "bad";
+  bad.make = [](double, double, const nlohmann::json &, int, const BinarySink &) -> std::unique_ptr<TapDecoder> {
+    throw std::runtime_error("no room");
+  };
+  std::vector<nlohmann::json> bev;
+  Tap b(bad, 0, [](std::vector<uint8_t> &&) {}, [&](const nlohmann::json &e) {
+    std::lock_guard<std::mutex> l(m);
+    bev.push_back(e);
+  });
+  const uint32_t bid = b.watch(5803e6);
+  meta.gapped = false;
+  b.push(bank.data(), bank.size(), meta);
+  CHECK(wait([&] {
+    std::lock_guard<std::mutex> l(m);
+    return !bev.empty() && bev.back().value("state", "") == "error";
+  }));
+  CHECK(!b.on() && bev.back()["on"] == false && bev.back()["error"] == "no room" && bev.back()["watch"] == bid);
+  b.push(bank.data(), bank.size(), meta); // off: ignored
+  const auto bev_last = [&] {
+    std::lock_guard<std::mutex> l(m);
+    return bev.back();
+  };
+  CHECK(b.stop(bid) == bid); // stopping the failed watch: its error is over (a reload must not show it)
+  CHECK(wait([&] { return bev_last().value("state", "") != "error"; }));
+  CHECK(bev_last()["on"] == false && bev_last()["watch"] == bid && b.status().value("state", "") != "error");
+  // a watch started and stopped before the tap's thread looks: it still gets its (off) status
+  const uint32_t quick = b.watch(5803e6);
+  b.stop(quick);
+  CHECK(quick == bid + 1);
+  CHECK(wait([&] { return bev_last()["watch"] == quick && bev_last()["on"] == false; }));
+}
+
+// The video tap: analog video (FmVideo) to pictures. NTSC at 40 MS/s and PAL at 20 MS/s: locked, its
+// standard told, fields at their rate in order, each a field (720 x 240 / 288) with the picture's bright
+// sky above its darker ground; encode_video's chroma: a red picture has U below and V above 128.
+static void test_video_tap() {
+  struct Case {
+    bool ntsc;
+    double fs, off;
+  };
+  for (const Case c : {Case{true, 40e6, 4e6}, Case{false, 20e6, -3e6}}) {
+    FmVideo gen(c.ntsc, c.fs, c.off, 8e6, 1, 25);
+    std::vector<std::vector<uint8_t>> got;
+    const TapKind k = video_tap();
+    CHECK(k.rate_ok(c.fs) && !k.rate_ok(10e6));
+    auto dec = k.make(c.fs, c.off, nlohmann::json::object(), 1, [&](std::vector<uint8_t> &&f) { got.push_back(std::move(f)); });
+    std::vector<std::complex<float>> x(8192);
+    for (uint64_t done = 0; done < static_cast<uint64_t>(0.3 * c.fs); done += x.size()) {
+      gen.fill(x.data(), x.size());
+      for (auto &v : x)
+        v *= 1000.f; // (LSB-scale, as the unpacked banks)
+      dec->feed(x.data(), x.size());
+    }
+    const nlohmann::json s = dec->stats();
+    const bool ok = s["state"] == "locked" && s["std"] == (c.ntsc ? "NTSC" : "PAL") && s["lock"].get<double>() > 0.9;
+    CHECK(ok);
+    // ~0.3 s of fields, less the acquisition
+    CHECK(got.size() >= (c.ntsc ? 9u : 7u) && got.size() <= (c.ntsc ? 19u : 16u));
+    if (!ok || got.empty() || std::getenv("TEST_VERBOSE"))
+      std::printf("  (video tap %s: %s, %zu fields)\n", c.ntsc ? "NTSC" : "PAL", s.dump().c_str(), got.size());
+    if (got.empty())
+      continue;
+    DecodedVideo v;
+    CHECK(decode_video(got.back().data(), got.back().size(), v));
+    CHECK(v.slot == 1 && v.width == 720 && v.height == (c.ntsc ? 240 : 288) && v.pal == !c.ntsc && v.lock > 0.9);
+    DecodedVideo v0;
+    CHECK(decode_video(got.front().data(), got.front().size(), v0) && v.seq == v0.seq + got.size() - 1 && v.t >= v0.t);
+    double top = 0, bottom = 0;
+    for (int r = 0; r < v.height; r++)
+      for (int x = 100; x < 620; x++)
+        (r < v.height / 4 ? top : r > v.height / 2 ? bottom : top) += r < v.height / 4 || r > v.height / 2 ? v.y[r * v.width + x] : 0;
+    top /= (v.height / 4) * 520.0;
+    bottom /= (v.height - v.height / 2 - 1) * 520.0;
+    CHECK(top > bottom + 40);
+    if (std::getenv("TEST_VERBOSE"))
+      std::printf("  (video tap: top Y %.0f, bottom Y %.0f)\n", top, bottom);
+  }
+  std::vector<uint8_t> red(720 * 480 * 4);
+  for (size_t i = 0; i < red.size(); i += 4)
+    red[i] = 220, red[i + 1] = 20, red[i + 2] = 20;
+  const auto b = encode_video(kp::Frame{red.data(), 720, 480, &kp::kNtsc}, 0, 5, 1.5, 0.9f, true);
+  DecodedVideo v;
+  CHECK(decode_video(b.data(), b.size(), v) && v.width == 720 && v.height == 240 && v.colour && !v.pal && v.seq == 5);
+  CHECK(v.u[100] < 100 && v.v[100] > 200 && std::abs(v.y[1000] - 0.299 * 220 - 0.587 * 20 - 0.114 * 20) < 1.5);
+  const auto g = encode_video(kp::Frame{red.data(), 720, 480, &kp::kPal}, 0, 6, 1.5, 0.9f, false);
+  CHECK(decode_video(g.data(), g.size(), v) && v.pal && !v.colour && v.u[100] == 128 && v.v[100] == 128);
+  CHECK(!decode_video(g.data(), g.size() - 1, v));
+}
+
 static void test_ble() {
   std::mt19937 rng(9);
   std::normal_distribution<float> g(0, 1);
@@ -1637,6 +1861,59 @@ static void test_ssid_text() {
   }
 }
 
+// --video <file.sigmf-data> <MHz> [field.ppm]: the video tap's decoder over a recording (the transmitter at
+// MHz); its status, and the last field as a picture.
+static int video_scan(const char *path, double mhz, const char *ppm) {
+  std::string p(path), mp = p.substr(0, p.rfind(".sigmf-data")) + ".sigmf-meta";
+  std::ifstream m(mp);
+  std::string meta((std::istreambuf_iterator<char>(m)), std::istreambuf_iterator<char>());
+  auto num = [&](const char *key) {
+    const auto k = meta.find(key);
+    return k == std::string::npos ? 0.0 : std::atof(meta.c_str() + meta.find(':', k + std::strlen(key)) + 1);
+  };
+  const double fs = num("\"core:sample_rate\""), fc = num("\"core:frequency\"");
+  const TapKind k = video_tap();
+  if (!k.rate_ok(fs)) {
+    std::printf("%.0f MS/s: the video tap takes 20 or 40 MS/s\n", fs / 1e6);
+    return 1;
+  }
+  std::vector<uint8_t> last;
+  uint64_t fields = 0;
+  auto dec = k.make(fs, mhz * 1e6 - fc, nlohmann::json::object(), 0, [&](std::vector<uint8_t> &&f) {
+    fields++;
+    last = std::move(f);
+  });
+  std::ifstream f(p, std::ios::binary);
+  std::vector<int16_t> raw(2 * 8192);
+  std::vector<std::complex<float>> x(8192);
+  uint64_t done = 0;
+  const auto t0 = std::chrono::steady_clock::now();
+  while (f.read(reinterpret_cast<char *>(raw.data()), static_cast<std::streamsize>(raw.size() * 2))) {
+    for (size_t i = 0; i < 8192; i++)
+      x[i] = {raw[2 * i] / 16.f, raw[2 * i + 1] / 16.f}; // (ci16 holds the LSBs << 4, as the recorder writes them)
+    dec->feed(x.data(), x.size());
+    done += 8192;
+  }
+  const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  std::printf("%.2f s of %.0f MS/s at %.1f MHz, video at %.1f MHz: %llu fields, decoded in %.2f s (%.1fx real time)\n%s\n",
+              static_cast<double>(done) / fs, fs / 1e6, fc / 1e6, mhz, static_cast<unsigned long long>(fields), secs,
+              static_cast<double>(done) / fs / secs, dec->stats().dump().c_str());
+  DecodedVideo v;
+  if (ppm && !last.empty() && decode_video(last.data(), last.size(), v)) {
+    std::ofstream o(ppm, std::ios::binary);
+    o << "P6 " << v.width << " " << v.height << " 255\n";
+    for (int r = 0; r < v.height; r++)
+      for (int c = 0; c < v.width; c++) {
+        const float Y = v.y[r * v.width + c], U = v.u[(r / 2) * (v.width / 2) + c / 2] - 128.f,
+                    V = v.v[(r / 2) * (v.width / 2) + c / 2] - 128.f;
+        const auto q = [](float a) { return static_cast<char>(std::clamp(std::lround(a), 0L, 255L)); };
+        const char px[3] = {q(Y + 1.402f * V), q(Y - 0.344136f * U - 0.714136f * V), q(Y + 1.772f * U)};
+        o.write(px, 3);
+      }
+  }
+  return fields ? 0 : 1;
+}
+
 // --wifi <file.sigmf-data>: the frame finder over a recording (ci16, rate and centre from its meta).
 static int wifi_scan(const char *path) {
   std::string p(path), mp = p.substr(0, p.rfind(".sigmf-data")) + ".sigmf-meta";
@@ -1725,6 +2002,8 @@ static int wifi_scan(const char *path) {
 }
 
 int main(int argc, char **argv) {
+  if (argc > 3 && std::string(argv[1]) == "--video")
+    return video_scan(argv[2], std::atof(argv[3]), argc > 4 ? argv[4] : nullptr);
   if (argc > 2 && std::string(argv[1]) == "--wifi")
     return wifi_scan(argv[2]);
   if (argc > 1 && std::string(argv[1]) == "--bench")
@@ -1747,6 +2026,8 @@ int main(int argc, char **argv) {
   test_signals();
   test_video();
   test_video_follow();
+  test_tap();
+  test_video_tap();
   test_ble();
   std::printf(g_fail ? "%d FAILED\n" : "all tests passed\n", g_fail);
   return g_fail ? 1 : 0;
