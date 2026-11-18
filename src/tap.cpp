@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "tap.h"
 
+#include <algorithm>
 #include <cstring>
+#include <iterator>
 
 #include "protocol.h"
 
@@ -36,6 +38,7 @@ uint32_t Tap::watch(double freq, const json &params) {
     if (freq <= 0)
       _stopped = true;
     id = _watch.id;
+    _wid = id;
     _dropped = 0;
     _span_ok = true;
     _freq = _watch.freq;
@@ -87,9 +90,9 @@ void Tap::loop() {
     bool fresh = false; // a new watch: its status goes out now
     {
       std::unique_lock<std::mutex> l(_m);
-      // Woken by a batch of chunks, a new watch, and a stop (its off status goes out at once). Fewer
-      // than a batch go after a short wait (a stream that stops), and the status needs a turn anyway.
-      _cv.wait_for(l, _q.empty() ? std::chrono::milliseconds(100) : std::chrono::milliseconds(20), [&] {
+      // Woken by a batch of chunks, a new watch, and a stop (its off status goes out at once). While on,
+      // fewer than a batch go within 20 ms (a stream that stops); off, it looks at 10 Hz.
+      _cv.wait_for(l, _watch.freq > 0 ? std::chrono::milliseconds(20) : std::chrono::milliseconds(100), [&] {
         return _quit || _q.size() >= kBatch || _watch.id != id || _stopped || (_watch.freq > 0) != (was == 1);
       });
       if (_quit)
@@ -104,7 +107,11 @@ void Tap::loop() {
         _stopped = false;
         error.clear();
       }
-      batch.swap(_q); // (all of it: one lock a batch)
+      // up to kMaxTake at a time (one lock for them all), so a stop, a new watch and the status wait
+      // for at most that much decoding even when the thread is behind
+      const auto end = _q.begin() + static_cast<std::ptrdiff_t>(std::min(_q.size(), kMaxTake));
+      batch.assign(std::make_move_iterator(_q.begin()), std::make_move_iterator(end));
+      _q.erase(_q.begin(), end);
       w = _watch;
     }
     id = w.id;
@@ -113,7 +120,9 @@ void Tap::loop() {
       dec.reset();
     try {
       for (const Chunk &c : batch) {
-        if (!on || c.watch != w.id) // pushed for an earlier watch: not this one's to decode
+        if (!on || _freq.load() <= 0 || _wid.load() != w.id) // stopped or replaced meanwhile: not its to decode
+          break;
+        if (c.watch != w.id) // pushed for an earlier watch
           continue;
         if (!dec || c.gen != gen || c.fs != fs || c.centre != centre) { // a new stream run: a new decoder
           gen = c.gen;
