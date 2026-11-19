@@ -844,7 +844,7 @@ void Decoder::scan(std::vector<Frame> &out) {
   // in its 20 MHz) reads ~0.5 squared and ~0.15 to the 4th; noise ~0.09 either way. The larger counts.
   const uint64_t us = 20 * static_cast<uint64_t>(_dec), L2 = us, W2 = 10 * us, S = 2 * static_cast<uint64_t>(_dec), NT = W2 / S;
   std::complex<double> q2 = 0, q4 = 0;
-  const auto term = [&](uint64_t k, cf &t2) { // (written out: std::complex's product checks for NaN)
+  const auto term = [&](uint64_t k) { // (written out: std::complex's product checks for NaN)
     const cf *p = &_buf[k - _abs0], *q = p + L2;
     float re = 0, im = 0;
     for (uint64_t j = 0; j < S; j++) {
@@ -852,22 +852,18 @@ void Decoder::scan(std::vector<Frame> &out) {
       im += p[j].imag() * q[j].real() - p[j].real() * q[j].imag();
     }
     const float a = re * re + im * im;
-    t2 = cf(0);
     if (!(a > 1e-30f))
       return cf(0);
-    // z^2 / |z|^2, and that squared (scaled before squaring: tiny samples would underflow |z|^4)
-    const float u = (re * re - im * im) / a, v = 2 * re * im / a;
-    t2 = cf(u, v);
-    return cf(u * u - v * v, 2 * u * v);
+    return cf((re * re - im * im) / a, 2 * re * im / a); // z^2 / |z|^2 (scaled: tiny samples would underflow |z|^4)
   };
+  const auto sq = [](cf z) { return std::complex<double>(z.real() * z.real() - z.imag() * z.imag(), 2 * z.real() * z.imag()); };
   uint64_t tick = 0, slot = 0; // samples to the next term; the ring's oldest term
   if (_dsss) {
     _z2.assign(NT, 0);
-    _z4.assign(NT, 0);
     for (uint64_t j = 0; j < NT; j++) {
-      _z4[j] = term(_scan + j * S, _z2[j]);
+      _z2[j] = term(_scan + j * S);
       q2 += std::complex<double>(_z2[j]);
-      q4 += std::complex<double>(_z4[j]);
+      q4 += sq(_z2[j]);
     }
   }
   for (uint64_t i = _scan; i < limit; i++) {
@@ -936,12 +932,10 @@ void Decoder::scan(std::vector<Frame> &out) {
           _dheld_end = i;
         }
       }
-      cf z2;
-      const cf z4 = term(i + W2, z2); // the term at i leaves, the one at i + W2 takes its place
+      const cf z2 = term(i + W2); // the term at i leaves, the one at i + W2 takes its place
       q2 += std::complex<double>(z2) - std::complex<double>(_z2[slot]);
-      q4 += std::complex<double>(z4) - std::complex<double>(_z4[slot]);
+      q4 += sq(z2) - sq(_z2[slot]);
       _z2[slot] = z2;
-      _z4[slot] = z4;
       if (++slot == NT)
         slot = 0;
     }
@@ -1121,21 +1115,7 @@ void Decoder::finish(std::vector<Frame> &out) {
     if (ok && _points)
       p.f.pts = std::move(g.pts); // (the header's own, from fewer symbols, otherwise)
     if (ok && g.mac) {
-      Frame &f = p.f; // its timing and channel stay; the MAC fields come from the whole decode
-      f.mac = true;
-      f.type = g.type;
-      f.subtype = g.subtype;
-      f.has_ta = g.has_ta;
-      f.ta = g.ta;
-      f.beacon = g.beacon;
-      f.bssid = g.bssid;
-      f.ssid = g.ssid;
-      f.channel = g.channel;
-      f.ra = g.ra;
-      f.seq = g.seq;
-      f.retry = g.retry;
-      f.prot = g.prot;
-      f.vendor = std::move(g.vendor);
+      static_cast<MacFields &>(p.f) = std::move(static_cast<MacFields &>(g)); // its timing and channel stay
     }
     out.push_back(std::move(p.f));
     _pend.erase(_pend.begin() + static_cast<long>(i));

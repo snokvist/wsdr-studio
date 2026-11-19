@@ -35,18 +35,8 @@ struct Points {
   int skip = 0;
 };
 
-struct Frame {
-  double t = 0;          // start (s), on the clock of the samples fed in
-  double centre_hz = 0;  // the 20 MHz channel it was decoded on (40 MHz: the pair's centre)
-  int bw_mhz = 20;       // 20, or 40 when its preamble is duplicated on the paired channel (5 GHz)
-  char fmt = 'L';        // 'L' legacy OFDM, 'H' HT (802.11n), 'V' VHT (802.11ac), 'X' HE/EHT (802.11ax/be), 'B' 802.11b DSSS/CCK
-  int rate_mbps = 0;     // L-SIG rate (HT/VHT frames carry 6 here); 802.11b: 1, 2, 5 (5.5) or 11
-  int length = 0;        // L-SIG length (bytes)
-  double dur_us = 0;     // airtime from L-SIG (covers the whole PPDU, also HT/VHT)
-  float snr_db = 0;      // from the two LTF copies (OFDM: per subcarrier; 802.11b: the despread symbol's, a larger figure)
-  double cfo_hz = 0;     // the sender's carrier against this receiver's tuning (both crystals' errors)
-  int ltf_at = 0;        // OFDM: where its first LTF copy sits in the 20 MS/s snippet (a second decode of the same snippet starts there)
-  Points pts;            // with Decoder::keep_points
+// What a frame decoded whole says of itself (Frame's base: a whole decode hands it over as one)
+struct MacFields {
   // 6 Mb/s legacy frames (beacons, ACKs, RTS/CTS, ...) and 1 / 2 Mb/s 802.11b ones are decoded whole;
   // with a good CRC their MAC header is read (addresses, sequence number, retry and protected bits and,
   // for beacons and probe responses, the network's name and channel). Payloads are not kept, except
@@ -69,6 +59,20 @@ struct Frame {
   bool beacon = false;   // a beacon or probe response: bssid, ssid, channel
   std::string ssid;      // as sent (UTF-8 checked; empty: hidden network)
   int channel = 0;       // from its DS parameter set (0: none)
+};
+
+struct Frame : MacFields {
+  double t = 0;          // start (s), on the clock of the samples fed in
+  double centre_hz = 0;  // the 20 MHz channel it was decoded on (40 MHz: the pair's centre)
+  int bw_mhz = 20;       // 20, or 40 when its preamble is duplicated on the paired channel (5 GHz)
+  char fmt = 'L';        // 'L' legacy OFDM, 'H' HT (802.11n), 'V' VHT (802.11ac), 'X' HE/EHT (802.11ax/be), 'B' 802.11b DSSS/CCK
+  int rate_mbps = 0;     // L-SIG rate (HT/VHT frames carry 6 here); 802.11b: 1, 2, 5 (5.5) or 11
+  int length = 0;        // L-SIG length (bytes)
+  double dur_us = 0;     // airtime from L-SIG (covers the whole PPDU, also HT/VHT)
+  float snr_db = 0;      // from the two LTF copies (OFDM: per subcarrier; 802.11b: the despread symbol's, a larger figure)
+  double cfo_hz = 0;     // the sender's carrier against this receiver's tuning (both crystals' errors)
+  int ltf_at = 0;        // OFDM: where its first LTF copy sits in the 20 MS/s snippet (a second decode of the same snippet starts there)
+  Points pts;            // with Decoder::keep_points
 };
 
 // A network name as received, made safe to show and to write as JSON (see wifi.cpp).
@@ -135,7 +139,7 @@ private:
   // the detection count is one short.)
   bool _dheld = false;
   uint64_t _dheld_start = 0, _dheld_end = 0;
-  std::vector<std::complex<float>> _z2, _z4; // the window's terms, squared and to the 4th (rings), to slide it
+  std::vector<std::complex<float>> _z2; // the window's terms, squared (a ring: to the 4th, their squares), to slide it
   cf _dc = 0;                   // the samples' DC offset (taken out as they arrive)
   std::vector<Job> _bjobs;      // to probe, in order
   uint32_t _ndet = 0;           // detections so far

@@ -42,14 +42,13 @@ bool have_peer = false;
 // (the counts are shared by the sender task, the Wi-Fi task's callbacks and the console: under `mux`)
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 uint32_t sent, send_ok, send_fail, send_err, counter;
+uint32_t epoch; // bumped by a reset: a send that straddles one is not counted
 
 struct {
   uint8_t mac[6];
   uint32_t n, lo, hi;
   bool any;
 } rx; // the receiver's count of one sender's frames
-
-void stats();
 
 void apply_rate(const uint8_t *to) {
 #if ESP_IDF_VERSION_MAJOR >= 5
@@ -129,7 +128,7 @@ void sender(void *) {
     int left = count;
     while (running && tx) {
       portENTER_CRITICAL(&mux);
-      const uint32_t n = counter;
+      const uint32_t n = counter, e = epoch;
       portEXIT_CRITICAL(&mux);
       memcpy(buf, "WSDR", 4);
       memcpy(buf + 4, &n, 4);
@@ -139,11 +138,13 @@ void sender(void *) {
         buf[i] = static_cast<uint8_t>(i);
       const bool ok = esp_now_send(to, buf, size) == ESP_OK;
       portENTER_CRITICAL(&mux);
-      if (ok) {
-        counter++;
-        sent++;
-      } else {
-        send_err++;
+      if (e == epoch) {
+        if (ok) {
+          counter = n + 1;
+          sent++;
+        } else {
+          send_err++;
+        }
       }
       portEXIT_CRITICAL(&mux);
       if (count && --left <= 0)
@@ -152,7 +153,11 @@ void sender(void *) {
       const int64_t wait = next - esp_timer_get_time();
       vTaskDelay(wait > 1000 ? pdMS_TO_TICKS(wait / 1000) : 1);
     }
-    stats();
+    portENTER_CRITICAL(&mux); // (a copy: printing under the lock is not allowed)
+    const uint32_t c = counter, n_sent = sent, ok = send_ok, fail = send_fail, err = send_err;
+    portEXIT_CRITICAL(&mux);
+    Serial.printf("stopped: counter %lu, sent %lu (acked/ok %lu, failed %lu, not queued %lu)\n", (unsigned long)c, (unsigned long)n_sent,
+                  (unsigned long)ok, (unsigned long)fail, (unsigned long)err);
   }
 }
 
@@ -196,6 +201,13 @@ void stats() {
 void reset_counts() {
   portENTER_CRITICAL(&mux);
   counter = sent = send_ok = send_fail = send_err = 0;
+  epoch++;
+  memset(&rx, 0, sizeof rx);
+  portEXIT_CRITICAL(&mux);
+}
+
+void reset_rx() {
+  portENTER_CRITICAL(&mux);
   memset(&rx, 0, sizeof rx);
   portEXIT_CRITICAL(&mux);
 }
@@ -207,7 +219,7 @@ void command(String line) {
   if (c == "role" && a.length()) {
     running = false;
     tx = a == "tx";
-    reset_counts();
+    reset_rx(); // (the tx counter goes on: one recording never holds the same counter twice)
   } else if (c == "chan" && a.length()) {
     chan = constrain(a.toInt(), 1, 13);
     set_channel(chan);

@@ -18,9 +18,10 @@ bool espnow(const uint8_t *m, size_t n, Frame &f) {
     return false;
   const bool to_all = std::all_of(m + 16, m + 22, [](uint8_t b) { return b == 0xff; });
   if (f.prot) {
-    // (addr1 a group address: ESP-NOW does not encrypt those; the body: a CCMP header with its ExtIV
-    // bit, the smallest ESP-NOW body (category, OUI, random, one element's head: 15 bytes), the MIC)
-    if (!to_all || (m[4] & 1) || n < 24 + 8 + 15 + 8 || !(m[24 + 3] & 0x20))
+    // (addr1 a group address: ESP-NOW does not encrypt those; the body: a CCMP header (its reserved
+    // octet 0, the ExtIV bit set), the smallest ESP-NOW body (category, OUI, random, one element's
+    // head: 15 bytes), the MIC)
+    if (!to_all || (m[4] & 1) || n < 24 + 8 + 15 + 8 || m[24 + 2] != 0 || !(m[24 + 3] & 0x20))
       return false;
     f.vendor.name = "espnow";
     f.vendor.encrypted = true;

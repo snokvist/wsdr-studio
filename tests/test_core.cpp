@@ -2021,7 +2021,12 @@ static void test_espnow_parse() {
   m[27] = 0; // no ExtIV: not a CCMP header
   CHECK(!parse(m).vendor.name);
   m = enc({0x24, 0x0a, 0xc4, 0, 0, 2});
-  m.resize(24 + 8 + 10); // too short for ESP-NOW's smallest body and the MIC
+  m[26] = 1; // CCMP's reserved octet set: not CCMP
+  CHECK(!parse(m).vendor.name);
+  m = enc({0x24, 0x0a, 0xc4, 0, 0, 2});
+  m.resize(24 + 8 + 15 + 8); // the smallest it can be (header, CCMP, ESP-NOW's smallest body, MIC)
+  CHECK(parse(m).vendor.encrypted);
+  m.pop_back(); // one short
   CHECK(!parse(m).vendor.name);
   CHECK(!parse(enc({0xff, 0xff, 0xff, 0xff, 0xff, 0xff})).vendor.name);
   m = enc({0x24, 0x0a, 0xc4, 0, 0, 2});

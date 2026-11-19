@@ -740,14 +740,14 @@ json Engine::devices_json(const std::vector<DeviceInfo> &d) {
   return {{"type", "devices"}, {"devices", arr}};
 }
 
-// A vendor protocol's frame (wifi::Frame::vendor): what it is, where to, and (with_data, for the one
-// frame the inspector asks for) its payload as hex, which the JSON writer cannot refuse.
 static std::string mac_text(const std::array<uint8_t, 6> &a) {
   char b[18];
   std::snprintf(b, sizeof b, "%02x:%02x:%02x:%02x:%02x:%02x", a[0], a[1], a[2], a[3], a[4], a[5]);
   return b;
 }
 
+// A vendor protocol's frame (wifi::Frame::vendor): what it is, where to, and (with_data, for the one
+// frame the inspector asks for) its payload as hex, which the JSON writer cannot refuse.
 static json vendor_json(const wifi::Frame &f, bool with_data) {
   json j = {{"name", f.vendor.name}, {"version", f.vendor.version}, {"to", mac_text(f.ra)}, {"seq", f.seq}, {"retry", f.retry},
             {"enc", f.vendor.encrypted}, {"len", f.vendor.data.size()}};
