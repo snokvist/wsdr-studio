@@ -838,11 +838,13 @@ void Decoder::scan(std::vector<Frame> &out) {
   }
   const uint64_t min_plateau = 50 * static_cast<uint64_t>(_dec), max_plateau = 400 * static_cast<uint64_t>(_dec);
   // the 802.11b detector: lag 1 us, window 10 us; a term per 0.1 us (the lag product summed over it,
-  // as a unit phasor, to the 4th power: noise gives |mean| ~0.09, an 802.11b frame near 1), 100 terms
-  // a window, kept in a ring to slide the window
+  // as a unit phasor), 100 terms a window, kept in rings to slide the window. Squared, the DBPSK
+  // preamble and header's +-1 go; to the 4th power, a DQPSK payload's quarter turns go too (2 Mb/s
+  // frames stay on), at the cost of four times the phase noise: a weak frame (~5 dB over the noise
+  // in its 20 MHz) reads ~0.5 squared and ~0.15 to the 4th; noise ~0.09 either way. The larger counts.
   const uint64_t us = 20 * static_cast<uint64_t>(_dec), L2 = us, W2 = 10 * us, S = 2 * static_cast<uint64_t>(_dec), NT = W2 / S;
-  std::complex<double> q4 = 0;
-  const auto term = [&](uint64_t k) { // (written out: std::complex's product checks for NaN)
+  std::complex<double> q2 = 0, q4 = 0;
+  const auto term = [&](uint64_t k, cf &t2) { // (written out: std::complex's product checks for NaN)
     const cf *p = &_buf[k - _abs0], *q = p + L2;
     float re = 0, im = 0;
     for (uint64_t j = 0; j < S; j++) {
@@ -850,17 +852,21 @@ void Decoder::scan(std::vector<Frame> &out) {
       im += p[j].imag() * q[j].real() - p[j].real() * q[j].imag();
     }
     const float a = re * re + im * im;
+    t2 = cf(0);
     if (!(a > 1e-30f))
       return cf(0);
-    // z^2 / |z|^2, squared (scaled before squaring: tiny samples would underflow |z|^4)
+    // z^2 / |z|^2, and that squared (scaled before squaring: tiny samples would underflow |z|^4)
     const float u = (re * re - im * im) / a, v = 2 * re * im / a;
+    t2 = cf(u, v);
     return cf(u * u - v * v, 2 * u * v);
   };
   uint64_t tick = 0, slot = 0; // samples to the next term; the ring's oldest term
   if (_dsss) {
+    _z2.assign(NT, 0);
     _z4.assign(NT, 0);
     for (uint64_t j = 0; j < NT; j++) {
-      _z4[j] = term(_scan + j * S);
+      _z4[j] = term(_scan + j * S, _z2[j]);
+      q2 += std::complex<double>(_z2[j]);
       q4 += std::complex<double>(_z4[j]);
     }
   }
@@ -890,7 +896,7 @@ void Decoder::scan(std::vector<Frame> &out) {
       tick = S - 1;
       // on above 0.3 while loud; off below 0.12, or after 2 us without power (a frame and its ACK a
       // SIFS later are two; a spur cannot hold it on)
-      const double m2 = std::norm(q4) / static_cast<double>(NT * NT); // (the mean's magnitude, squared)
+      const double m2 = std::max(std::norm(q2), std::norm(q4)) / static_cast<double>(NT * NT); // (the mean's magnitude, squared)
       const bool loud = _noise > 0 && p2 > 2 * _noise * static_cast<double>(W);
       if (loud)
         _dloud = i;
@@ -930,8 +936,11 @@ void Decoder::scan(std::vector<Frame> &out) {
           _dheld_end = i;
         }
       }
-      const cf z4 = term(i + W2); // the term at i leaves, the one at i + W2 takes its place
+      cf z2;
+      const cf z4 = term(i + W2, z2); // the term at i leaves, the one at i + W2 takes its place
+      q2 += std::complex<double>(z2) - std::complex<double>(_z2[slot]);
       q4 += std::complex<double>(z4) - std::complex<double>(_z4[slot]);
+      _z2[slot] = z2;
       _z4[slot] = z4;
       if (++slot == NT)
         slot = 0;
@@ -1122,6 +1131,11 @@ void Decoder::finish(std::vector<Frame> &out) {
       f.bssid = g.bssid;
       f.ssid = g.ssid;
       f.channel = g.channel;
+      f.ra = g.ra;
+      f.seq = g.seq;
+      f.retry = g.retry;
+      f.prot = g.prot;
+      f.vendor = std::move(g.vendor);
     }
     out.push_back(std::move(p.f));
     _pend.erase(_pend.begin() + static_cast<long>(i));

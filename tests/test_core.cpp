@@ -1025,6 +1025,8 @@ static void test_dsss_beacon() {
       {1, 0, 0, 50e3, 300, 0.05f, 0, false, false},    // a tone on the air from 300 us before it
       {1, 0, 0, 50e3, 300, 0.05f, 0, true, false},     // noise 8 dB below it, from 300 us before it
       {1, 0, 0, 50e3, 0, 0.2f, 0, false, false},       // weak (~4 dB over the noise in 40 MHz)
+      {1, 0, 0, 50e3, 0, 0.3f, 0, false, false},       // weaker (~0.5 dB in 40 MHz, ~3.5 dB in its 20 MHz: seen on air)
+      {1, 250, 10, 50e3, 0, 0.3f, 0, false, false},    // the same, 300 bytes
       {1, 0, 0, 50e3, 0, 0.05f, 0.05f, false, false},  // the adapter's DC offset
       {1, 0, 0, 50e3, 0, 0.05f, 0, false, true},       // its ACK a SIFS later (two frames)
       {1, 0, 0, 50e3, 300, 0.05f, 0, false, true},     // both under a tone that holds the detector on
@@ -1056,7 +1058,7 @@ static void test_dsss_beacon() {
       CHECK(std::abs(f.centre_hz - 2412e6) < 1);
       CHECK(f.mac && f.beacon && f.ssid == "test-ssid" && f.channel == 1);
       CHECK(std::abs(f.t - static_cast<double>(at) / fs) < 3e-6);
-      CHECK(f.snr_db > (cs.sigma > 0.1f ? 5 : 10));
+      CHECK(f.snr_db > (cs.sigma > 0.25f ? 2 : cs.sigma > 0.1f ? 5 : 10));
     }
     CHECK(b == 1);
     CHECK(acks == (cs.ack ? 1 : 0));
@@ -1934,7 +1936,6 @@ static void test_ble() {
     CHECK(b.kind != 'E');
 }
 
-// Network names: whatever bytes a beacon carries, the text is valid UTF-8 the JSON writer accepts.
 // An ESP-NOW frame (without FCS) from 24:0a:c4:00:00:01 to `to`: elements of `bodies` (v2 chains them
 // with "more data"), version `ver`; seq 0x123.
 static std::vector<uint8_t> espnow_frame(const std::vector<std::vector<uint8_t>> &bodies, int ver = 1,
@@ -2007,10 +2008,23 @@ static void test_espnow_parse() {
   f = parse(m);
   CHECK(f.vendor.name && f.vendor.data.size() == 250);
   // encrypted: to one station with addr3 broadcast is ESP-NOW's addressing; to a group address is not
-  f = parse(espnow_frame({hello}, 1, {0x24, 0x0a, 0xc4, 0, 0, 2}, 0x40));
+  // (encrypted: the body as on air, a CCMP header with ExtIV set, ciphertext, an 8-byte MIC)
+  const auto enc = [&](std::array<uint8_t, 6> to) {
+    auto m = espnow_frame({hello}, 1, to, 0x40);
+    m.insert(m.begin() + 24, {1, 0, 0, 0x20, 0, 0, 0, 0});
+    m.insert(m.end(), 8, 0xaa);
+    return m;
+  };
+  f = parse(enc({0x24, 0x0a, 0xc4, 0, 0, 2}));
   CHECK(f.vendor.name && f.vendor.encrypted && f.vendor.data.empty());
-  CHECK(!parse(espnow_frame({hello}, 1, {0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, 0x40)).vendor.name);
-  m = espnow_frame({hello}, 1, {0x24, 0x0a, 0xc4, 0, 0, 2}, 0x40);
+  m = enc({0x24, 0x0a, 0xc4, 0, 0, 2});
+  m[27] = 0; // no ExtIV: not a CCMP header
+  CHECK(!parse(m).vendor.name);
+  m = enc({0x24, 0x0a, 0xc4, 0, 0, 2});
+  m.resize(24 + 8 + 10); // too short for ESP-NOW's smallest body and the MIC
+  CHECK(!parse(m).vendor.name);
+  CHECK(!parse(enc({0xff, 0xff, 0xff, 0xff, 0xff, 0xff})).vendor.name);
+  m = enc({0x24, 0x0a, 0xc4, 0, 0, 2});
   m[16] = 0x24; // addr3 not broadcast
   CHECK(!parse(m).vendor.name);
 }
@@ -2046,6 +2060,7 @@ static void test_espnow_air() {
   CHECK(esp == 1);
 }
 
+// Network names: whatever bytes a beacon carries, the text is valid UTF-8 the JSON writer accepts.
 static void test_ssid_text() {
   auto t = [](const std::string &b) { return wifi::ssid_text(reinterpret_cast<const uint8_t *>(b.data()), b.size()); };
   CHECK(t("homelab") == "homelab");
@@ -2234,12 +2249,13 @@ static int wifi_scan(const char *path) {
   for (const auto &[k, e] : esp) {
     std::printf("  ESP-NOW %s: %d frames (v%d, up to %zu bytes, %d retries, %d encrypted)", k.c_str(), e.n, e.v, e.len, e.retry, e.enc);
     if (!e.ctr.empty()) {
-      const uint32_t lo = *e.ctr.begin(), hi = *e.ctr.rbegin();
-      std::printf("; counters %u..%u: %zu of %u (%.1f %%)", lo, hi, e.ctr.size(), hi - lo + 1, 100.0 * static_cast<double>(e.ctr.size()) / (hi - lo + 1));
+      const uint64_t lo = *e.ctr.begin(), hi = *e.ctr.rbegin(), span = hi - lo + 1; // (64-bit: 0..UINT32_MAX does not wrap)
+      std::printf("; counters %llu..%llu: %zu of %llu (%.1f %%)", static_cast<unsigned long long>(lo), static_cast<unsigned long long>(hi), e.ctr.size(),
+                  static_cast<unsigned long long>(span), 100.0 * static_cast<double>(e.ctr.size()) / static_cast<double>(span));
       int shown = 0;
-      for (uint32_t c = lo; c <= hi && shown < 20; c++)
-        if (!e.ctr.count(c))
-          std::printf("%s%u", shown++ ? " " : "; missing: ", c);
+      for (uint64_t c = lo; c <= hi && shown < 20; c++)
+        if (!e.ctr.count(static_cast<uint32_t>(c)))
+          std::printf("%s%llu", shown++ ? " " : "; missing: ", static_cast<unsigned long long>(c));
     }
     std::printf("\n");
   }

@@ -742,10 +742,14 @@ json Engine::devices_json(const std::vector<DeviceInfo> &d) {
 
 // A vendor protocol's frame (wifi::Frame::vendor): what it is, where to, and (with_data, for the one
 // frame the inspector asks for) its payload as hex, which the JSON writer cannot refuse.
+static std::string mac_text(const std::array<uint8_t, 6> &a) {
+  char b[18];
+  std::snprintf(b, sizeof b, "%02x:%02x:%02x:%02x:%02x:%02x", a[0], a[1], a[2], a[3], a[4], a[5]);
+  return b;
+}
+
 static json vendor_json(const wifi::Frame &f, bool with_data) {
-  char to[18];
-  std::snprintf(to, sizeof to, "%02x:%02x:%02x:%02x:%02x:%02x", f.ra[0], f.ra[1], f.ra[2], f.ra[3], f.ra[4], f.ra[5]);
-  json j = {{"name", f.vendor.name}, {"version", f.vendor.version}, {"to", to}, {"seq", f.seq}, {"retry", f.retry},
+  json j = {{"name", f.vendor.name}, {"version", f.vendor.version}, {"to", mac_text(f.ra)}, {"seq", f.seq}, {"retry", f.retry},
             {"enc", f.vendor.encrypted}, {"len", f.vendor.data.size()}};
   if (with_data) {
     static const char *kHex = "0123456789abcdef";
@@ -782,11 +786,8 @@ json Engine::points(uint64_t id) {
   }
   const auto r1 = [](double v) { return std::round(v * 10) / 10; };
   json who = json::object();
-  if (f.mac && f.has_ta) {
-    char b[18];
-    std::snprintf(b, sizeof b, "%02x:%02x:%02x:%02x:%02x:%02x", f.ta[0], f.ta[1], f.ta[2], f.ta[3], f.ta[4], f.ta[5]);
-    who["ta"] = b;
-  }
+  if (f.mac && f.has_ta)
+    who["ta"] = mac_text(f.ta);
   if (f.beacon)
     who["ssid"] = f.ssid;
   if (f.vendor.name)
@@ -857,17 +858,12 @@ void Engine::wifi_loop() {
     const uint64_t d = _wifi_dropped.load();
     if ((!found.empty() || !other.empty() || d != dropped) && (now - sent > 0.2 || found.size() > 400)) {
       json arr = json::array();
-      auto hex = [](const std::array<uint8_t, 6> &a) {
-        char b[18];
-        std::snprintf(b, sizeof b, "%02x:%02x:%02x:%02x:%02x:%02x", a[0], a[1], a[2], a[3], a[4], a[5]);
-        return std::string(b);
-      };
       for (const auto &f : found) {
         json e = {std::round(f.t * 1e6) / 1e6, f.centre_hz / 1e6, f.bw_mhz, std::string(1, f.fmt), f.rate_mbps, f.length,
                   std::round(f.dur_us), std::round(f.snr_db * 10) / 10};
         if (f.mac) { // decoded whole: sender, and for beacons the network
-          e.push_back(f.has_ta ? json(hex(f.ta)) : json(nullptr));
-          e.push_back(f.beacon ? json(hex(f.bssid)) : json(nullptr));
+          e.push_back(f.has_ta ? json(mac_text(f.ta)) : json(nullptr));
+          e.push_back(f.beacon ? json(mac_text(f.bssid)) : json(nullptr));
           e.push_back(f.beacon ? json(f.ssid) : json(nullptr));
           e.push_back(f.channel);
           if (f.vendor.name)

@@ -39,14 +39,17 @@ int chan = 6, mode = MODE_BCAST, rate = 0, size = 32, hz = 20, count = 0;
 uint8_t peer[6];
 bool have_peer = false;
 
-volatile uint32_t sent, send_ok, send_fail, send_err;
-uint32_t counter;
+// (the counts are shared by the sender task, the Wi-Fi task's callbacks and the console: under `mux`)
+portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+uint32_t sent, send_ok, send_fail, send_err, counter;
 
 struct {
   uint8_t mac[6];
   uint32_t n, lo, hi;
   bool any;
 } rx; // the receiver's count of one sender's frames
+
+void stats();
 
 void apply_rate(const uint8_t *to) {
 #if ESP_IDF_VERSION_MAJOR >= 5
@@ -75,21 +78,24 @@ void add_peer(const uint8_t *mac, bool encrypt) {
     Serial.printf("add peer: %s\n", esp_err_to_name(e));
 }
 
-#if ESP_IDF_VERSION_MAJOR >= 5 && ESP_IDF_VERSION_MINOR >= 5
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 5, 0)
 void on_sent(const esp_now_send_info_t *, esp_now_send_status_t status) {
 #else
 void on_sent(const uint8_t *, esp_now_send_status_t status) {
 #endif
+  portENTER_CRITICAL(&mux);
   if (status == ESP_NOW_SEND_SUCCESS)
     send_ok++;
   else
     send_fail++;
+  portEXIT_CRITICAL(&mux);
 }
 
 void count_rx(const uint8_t *src, const uint8_t *d, int n) {
   if (tx || n < 8 || memcmp(d, "WSDR", 4) != 0)
     return;
   const uint32_t c = d[4] | d[5] << 8 | d[6] << 16 | static_cast<uint32_t>(d[7]) << 24;
+  portENTER_CRITICAL(&mux);
   if (!rx.any || memcmp(rx.mac, src, 6) != 0) { // (a new sender: start again)
     memcpy(rx.mac, src, 6);
     rx.n = 0;
@@ -99,6 +105,7 @@ void count_rx(const uint8_t *src, const uint8_t *d, int n) {
   rx.n++;
   rx.lo = min(rx.lo, c);
   rx.hi = max(rx.hi, c);
+  portEXIT_CRITICAL(&mux);
 }
 #if ESP_IDF_VERSION_MAJOR >= 5
 void on_recv(const esp_now_recv_info_t *info, const uint8_t *d, int n) { count_rx(info->src_addr, d, n); }
@@ -121,26 +128,31 @@ void sender(void *) {
     int64_t next = esp_timer_get_time();
     int left = count;
     while (running && tx) {
+      portENTER_CRITICAL(&mux);
+      const uint32_t n = counter;
+      portEXIT_CRITICAL(&mux);
       memcpy(buf, "WSDR", 4);
-      memcpy(buf + 4, &counter, 4);
+      memcpy(buf + 4, &n, 4);
       buf[8] = static_cast<uint8_t>(mode);
       buf[9] = static_cast<uint8_t>(rate);
       for (int i = 10; i < size; i++)
         buf[i] = static_cast<uint8_t>(i);
-      if (esp_now_send(to, buf, size) == ESP_OK) {
+      const bool ok = esp_now_send(to, buf, size) == ESP_OK;
+      portENTER_CRITICAL(&mux);
+      if (ok) {
         counter++;
         sent++;
       } else {
         send_err++;
       }
+      portEXIT_CRITICAL(&mux);
       if (count && --left <= 0)
         running = false;
       next += 1000000 / hz;
       const int64_t wait = next - esp_timer_get_time();
       vTaskDelay(wait > 1000 ? pdMS_TO_TICKS(wait / 1000) : 1);
     }
-    Serial.printf("stopped: counter %lu, sent %lu (acked/ok %lu, failed %lu, not queued %lu)\n", (unsigned long)counter, (unsigned long)sent,
-                  (unsigned long)send_ok, (unsigned long)send_fail, (unsigned long)send_err);
+    stats();
   }
 }
 
@@ -164,17 +176,28 @@ void stats() {
 #if ESP_IDF_VERSION_MAJOR >= 5
   esp_now_get_version(&v);
 #endif
+  portENTER_CRITICAL(&mux); // (a copy: printing under the lock is not allowed)
+  const uint32_t c = counter, n_sent = sent, ok = send_ok, fail = send_fail, err = send_err;
+  const auto r = rx;
+  portEXIT_CRITICAL(&mux);
   Serial.printf("me %s (ESP-NOW v%lu), %s, channel %d, mode %s, rate %s, %d bytes, %d Hz\n", WiFi.macAddress().c_str(), (unsigned long)v,
                 tx ? "tx" : "rx", chan, kModes[mode], kRates[rate].name, size, hz);
   if (tx)
-    Serial.printf("tx: counter %lu, sent %lu (acked/ok %lu, failed %lu, not queued %lu)%s\n", (unsigned long)counter, (unsigned long)sent,
-                  (unsigned long)send_ok, (unsigned long)send_fail, (unsigned long)send_err, running ? ", sending" : "");
-  else if (rx.any)
-    Serial.printf("rx from %02x:%02x:%02x:%02x:%02x:%02x: %lu frames, counters %lu..%lu (%lu of %lu)\n", rx.mac[0], rx.mac[1], rx.mac[2],
-                  rx.mac[3], rx.mac[4], rx.mac[5], (unsigned long)rx.n, (unsigned long)rx.lo, (unsigned long)rx.hi, (unsigned long)rx.n,
-                  (unsigned long)(rx.hi - rx.lo + 1));
+    Serial.printf("tx: counter %lu, sent %lu (acked/ok %lu, failed %lu, not queued %lu)%s\n", (unsigned long)c, (unsigned long)n_sent,
+                  (unsigned long)ok, (unsigned long)fail, (unsigned long)err, running ? ", sending" : "");
+  else if (r.any)
+    Serial.printf("rx from %02x:%02x:%02x:%02x:%02x:%02x: %lu frames, counters %lu..%lu (%lu of %lu)\n", r.mac[0], r.mac[1], r.mac[2], r.mac[3],
+                  r.mac[4], r.mac[5], (unsigned long)r.n, (unsigned long)r.lo, (unsigned long)r.hi, (unsigned long)r.n,
+                  (unsigned long)(r.hi - r.lo + 1));
   else
     Serial.println("rx: nothing yet");
+}
+
+void reset_counts() {
+  portENTER_CRITICAL(&mux);
+  counter = sent = send_ok = send_fail = send_err = 0;
+  memset(&rx, 0, sizeof rx);
+  portEXIT_CRITICAL(&mux);
 }
 
 void command(String line) {
@@ -184,7 +207,7 @@ void command(String line) {
   if (c == "role" && a.length()) {
     running = false;
     tx = a == "tx";
-    memset(&rx, 0, sizeof rx);
+    reset_counts();
   } else if (c == "chan" && a.length()) {
     chan = constrain(a.toInt(), 1, 13);
     set_channel(chan);
@@ -221,8 +244,7 @@ void command(String line) {
   } else if (c == "stop") {
     running = false;
   } else if (c == "reset") {
-    counter = sent = send_ok = send_fail = send_err = 0;
-    memset(&rx, 0, sizeof rx);
+    reset_counts();
   } else if (c == "stats") {
     stats();
     return;
