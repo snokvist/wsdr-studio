@@ -1,0 +1,2 @@
+# ESP-NOW v2 (1470-byte payloads) needs IDF 5.4 or later; nothing else non-default
+CONFIG_ESP_WIFI_ESPNOW_MAX_ENCRYPT_NUM=7

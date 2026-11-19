@@ -47,13 +47,25 @@ struct Frame {
   double cfo_hz = 0;     // the sender's carrier against this receiver's tuning (both crystals' errors)
   int ltf_at = 0;        // OFDM: where its first LTF copy sits in the 20 MS/s snippet (a second decode of the same snippet starts there)
   Points pts;            // with Decoder::keep_points
-  // 6 Mb/s legacy frames (beacons, ACKs, RTS/CTS, ...) are decoded whole; with a good CRC their MAC
-  // header is read (only addresses and, for beacons and probe responses, the network's name and
-  // channel: payloads are not kept)
+  // 6 Mb/s legacy frames (beacons, ACKs, RTS/CTS, ...) and 1 / 2 Mb/s 802.11b ones are decoded whole;
+  // with a good CRC their MAC header is read (addresses, sequence number, retry and protected bits and,
+  // for beacons and probe responses, the network's name and channel). Payloads are not kept, except
+  // a vendor protocol's (below).
   bool mac = false;      // decoded, CRC good
   int type = -1, subtype = -1; // 0 management, 1 control, 2 data
   bool has_ta = false;   // the sender's address (control frames ACK and CTS carry none)
-  std::array<uint8_t, 6> ta{}, bssid{};
+  std::array<uint8_t, 6> ra{}, ta{}, bssid{}; // ra: the receiver (addr1; ff:ff:ff:ff:ff:ff broadcast)
+  int seq = -1;          // sequence number (-1: control frames carry none)
+  bool retry = false;    // a retransmission (the same seq again)
+  bool prot = false;     // its body is encrypted
+  // A vendor protocol carried in a management frame (vendor_frames.h), when a parser recognised it:
+  // its name (nullptr: none), version, whether it is encrypted (then no payload) and its payload
+  struct Vendor {
+    const char *name = nullptr;
+    int version = 0;
+    bool encrypted = false;
+    std::vector<uint8_t> data;
+  } vendor;
   bool beacon = false;   // a beacon or probe response: bssid, ssid, channel
   std::string ssid;      // as sent (UTF-8 checked; empty: hidden network)
   int channel = 0;       // from its DS parameter set (0: none)

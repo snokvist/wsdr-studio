@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "wifi.h"
+#include "vendor_frames.h"
 
 #include <algorithm>
 #include <array>
@@ -354,14 +355,23 @@ std::string utf8(const uint8_t *p, size_t n) {
   return s;
 }
 
-// A MAC frame whose FCS was good: its type, sender and, for beacons and probe responses, the network
-// (BSSID, name, primary channel). Nothing else is read.
+// A MAC frame whose FCS was good (by: with its FCS): its type, addresses, sequence number, flags and,
+// for beacons and probe responses, the network (BSSID, name, primary channel); a management frame a
+// vendor protocol recognises, its payload (vendor_frames.h). Nothing else is read.
 void parse_mac(const std::vector<uint8_t> &by, Frame &f) {
   if ((by[0] & 3) != 0 || ((by[0] >> 2) & 3) == 3)
     return; // not protocol version 0, or a reserved type: no header to read
   f.mac = true;
   f.type = (by[0] >> 2) & 3;
   f.subtype = by[0] >> 4;
+  f.retry = by[1] & 0x08;
+  f.prot = by[1] & 0x40;
+  if (by.size() >= 10)
+    std::copy(by.begin() + 4, by.begin() + 10, f.ra.begin());
+  if (f.type != 1 && by.size() >= 28)
+    f.seq = (by[22] | by[23] << 8) >> 4;
+  if (f.type == 0 && by.size() >= 28)
+    parse_vendor(by.data(), by.size() - 4, f);
   // CTS and ACK carry no sender; a control wrapper (7) another layout
   const bool no_ta = f.type == 1 && (f.subtype == 12 || f.subtype == 13 || f.subtype == 7);
   if (!no_ta && by.size() >= 20) {

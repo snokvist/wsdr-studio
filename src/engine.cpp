@@ -740,12 +740,33 @@ json Engine::devices_json(const std::vector<DeviceInfo> &d) {
   return {{"type", "devices"}, {"devices", arr}};
 }
 
+// A vendor protocol's frame (wifi::Frame::vendor): what it is, where to, and (with_data, for the one
+// frame the inspector asks for) its payload as hex, which the JSON writer cannot refuse.
+static json vendor_json(const wifi::Frame &f, bool with_data) {
+  char to[18];
+  std::snprintf(to, sizeof to, "%02x:%02x:%02x:%02x:%02x:%02x", f.ra[0], f.ra[1], f.ra[2], f.ra[3], f.ra[4], f.ra[5]);
+  json j = {{"name", f.vendor.name}, {"version", f.vendor.version}, {"to", to}, {"seq", f.seq}, {"retry", f.retry},
+            {"enc", f.vendor.encrypted}, {"len", f.vendor.data.size()}};
+  if (with_data) {
+    static const char *kHex = "0123456789abcdef";
+    std::string h;
+    h.reserve(2 * f.vendor.data.size());
+    for (uint8_t b : f.vendor.data) {
+      h += kHex[b >> 4];
+      h += kHex[b & 15];
+    }
+    j["hex"] = std::move(h);
+  }
+  return j;
+}
+
 // A kept frame and its points: {"frame", "t", "mhz", "bw", "fmt", "rate", "len", "snr", "cfo_hz",
 // "cfo_ppm" (against the channel's frequency), "evm_lsig_db", "evm_db" (payload; null: none), "bits"
 // (payload bits per subcarrier, 0 none), "n_lsig", "n_sig2" (then the payload's), "scale" (unit
 // power), "z": [I, Q, I, Q, ...] as integers; an HT / VHT frame adds from its SIG "mcs", "nss",
-// "width" (MHz), "sgi", "ldpc", "stbc" and "skip" (why no payload points: Points::skip); a 6 Mb/s frame decoded whole adds "ta" (its sender) and
-// a beacon "ssid"}.
+// "width" (MHz), "sgi", "ldpc", "stbc" and "skip" (why no payload points: Points::skip); a frame decoded whole adds "ta" (its sender) and
+// a beacon "ssid"; a vendor protocol's frame (vendor_frames.h) "proto": {"name", "version", "to", "seq", "retry", "enc", "len",
+// "hex": its payload (empty when encrypted)}}.
 json Engine::points(uint64_t id) {
   std::lock_guard<std::mutex> l(_km);
   const auto it = std::lower_bound(_kept.begin(), _kept.end(), id, [](const auto &k, uint64_t v) { return k.first < v; });
@@ -768,6 +789,8 @@ json Engine::points(uint64_t id) {
   }
   if (f.beacon)
     who["ssid"] = f.ssid;
+  if (f.vendor.name)
+    who["proto"] = vendor_json(f, true);
   json j = {{"frame", id}, {"t", f.t}, {"mhz", f.centre_hz / 1e6}, {"bw", f.bw_mhz}, {"fmt", std::string(1, f.fmt)},
           {"rate", f.rate_mbps}, {"len", f.length}, {"snr", r1(f.snr_db)}, {"cfo_hz", std::round(f.cfo_hz)},
           {"cfo_ppm", std::round(f.cfo_hz / f.centre_hz * 1e8) / 100}, {"evm_lsig_db", r1(P.evm_lsig_db)},
@@ -787,7 +810,8 @@ json Engine::points(uint64_t id) {
 
 // Wi-Fi frames from the samples the DSP thread hands over: found frames go out in batches as
 // {"type":"wifi","frames":[[t, centre MHz, width MHz, format, rate Mb/s, length, airtime us, SNR dB
-// (, sender, BSSID, network name, channel: 6 Mb/s frames decoded whole)]...],
+// (, sender, BSSID, network name, channel: frames decoded whole (, vendor protocol: {"name",
+// "version", "to", "seq", "retry", "enc", "len"}, no payload: see points())]...],
 // "other":[[t, centre MHz, width MHz, kind (T Bluetooth, N narrowband, M microwave oven, E BLE
 // advertising, C steady carrier, A analog video), us (, E: address, random, name; C: null, null, null,
 // comb kHz; A: null, null, null, line rate kHz, band low MHz, band high MHz)]...],
@@ -846,6 +870,8 @@ void Engine::wifi_loop() {
           e.push_back(f.beacon ? json(hex(f.bssid)) : json(nullptr));
           e.push_back(f.beacon ? json(f.ssid) : json(nullptr));
           e.push_back(f.channel);
+          if (f.vendor.name)
+            e.push_back(vendor_json(f, false));
         }
         arr.push_back(e);
       }
@@ -869,7 +895,8 @@ void Engine::wifi_loop() {
         uint64_t id0, kept0;
         {
           std::lock_guard<std::mutex> l(_km);
-          const auto cost = [](const wifi::Frame &f) { return std::max(f.pts.z.size(), kKeptMin); };
+          // (a point is 4 bytes; a vendor payload counts by the same measure)
+          const auto cost = [](const wifi::Frame &f) { return std::max(f.pts.z.size() + f.vendor.data.size() / 4, kKeptMin); };
           id0 = _next_frame;
           for (auto &f : found) {
             _kept_points += cost(f);

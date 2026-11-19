@@ -9,6 +9,7 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <set>
 #include <random>
 #include <cmath>
 #include <cstdio>
@@ -26,6 +27,7 @@
 #include "signals.h"
 #include "tap.h"
 #include "video.h"
+#include "vendor_frames.h"
 #include "wifi.h"
 #include "../third_party/kepyur/video.h"
 #include <atomic>
@@ -876,9 +878,10 @@ static void test_ht_points() {
 // frame starts, `nbytes` its MAC frame's length.
 static std::vector<std::complex<float>> dsss_frame(int rate, size_t pad, double ppm, double cfo, double lead_us, size_t &at, size_t &nbytes,
                                                    const std::string &ssid, float sigma = 0.05f, float dc = 0, bool inoise = false,
-                                                   bool ack = false) {
+                                                   bool ack = false, const std::vector<uint8_t> &custom = {}) {
   std::mt19937 rng(11);
   std::normal_distribution<float> g(0, 1);
+  // a beacon from 02:11:22:33:44:55 for ssid, or (custom) that MAC frame, without its FCS
   std::vector<uint8_t> mac = {0x80, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 2, 0x11, 0x22, 0x33, 0x44, 0x55,
                               2, 0x11, 0x22, 0x33, 0x44, 0x55, 0, 0};
   for (int i = 0; i < 12; i++)
@@ -887,6 +890,8 @@ static std::vector<std::complex<float>> dsss_frame(int rate, size_t pad, double 
   mac.push_back(static_cast<uint8_t>(ssid.size()));
   mac.insert(mac.end(), ssid.begin(), ssid.end());
   mac.insert(mac.end(), {3, 1, 1});
+  if (!custom.empty())
+    mac = custom;
   while (pad > 0) { // vendor elements to make it longer
     const size_t l = std::min<size_t>(pad, 200);
     mac.push_back(221);
@@ -1923,6 +1928,117 @@ static void test_ble() {
 }
 
 // Network names: whatever bytes a beacon carries, the text is valid UTF-8 the JSON writer accepts.
+// An ESP-NOW frame (without FCS) from 24:0a:c4:00:00:01 to `to`: elements of `bodies` (v2 chains them
+// with "more data"), version `ver`; seq 0x123.
+static std::vector<uint8_t> espnow_frame(const std::vector<std::vector<uint8_t>> &bodies, int ver = 1,
+                                         std::array<uint8_t, 6> to = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, uint8_t fc1 = 0) {
+  std::vector<uint8_t> m = {0xd0, fc1, 0, 0};
+  m.insert(m.end(), to.begin(), to.end());
+  m.insert(m.end(), {0x24, 0x0a, 0xc4, 0, 0, 1, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x30, 0x12});
+  m.insert(m.end(), {127, 0x18, 0xfe, 0x34, 0xde, 0xad, 0xbe, 0xef});
+  for (size_t k = 0; k < bodies.size(); k++) {
+    m.insert(m.end(), {221, static_cast<uint8_t>(5 + bodies[k].size()), 0x18, 0xfe, 0x34, 4,
+                       static_cast<uint8_t>(ver | (k + 1 < bodies.size() ? 0x10 : 0))});
+    m.insert(m.end(), bodies[k].begin(), bodies[k].end());
+  }
+  return m;
+}
+
+// Vendor protocols in management frames (vendor_frames.h): ESP-NOW v1 and v2, the frames it must not
+// claim, and malformed ones (nothing read past the frame, nothing kept).
+static void test_espnow_parse() {
+  auto parse = [](std::vector<uint8_t> m) {
+    for (int k = 0; k < 4; k++)
+      m.push_back(0); // (an FCS: parse_vendor gets the frame without it)
+    wifi::Frame f;
+    f.type = (m[0] >> 2) & 3;
+    f.subtype = m[0] >> 4;
+    f.prot = m[1] & 0x40;
+    wifi::parse_vendor(m.data(), m.size() - 4, f);
+    return f;
+  };
+  const std::vector<uint8_t> hello = {'W', 'S', 'D', 'R', 1, 0, 0, 0};
+  auto f = parse(espnow_frame({hello}));
+  CHECK(f.vendor.name && std::string(f.vendor.name) == "espnow" && f.vendor.version == 1 && !f.vendor.encrypted && f.vendor.data == hello);
+  f = parse(espnow_frame({{}})); // an empty payload
+  CHECK(f.vendor.name && f.vendor.data.empty());
+  // v2: 250 + 250 + 10 bytes in three elements
+  std::vector<uint8_t> a(250, 1), b(250, 2), c(10, 3);
+  f = parse(espnow_frame({a, b, c}, 2));
+  CHECK(f.vendor.name && f.vendor.version == 2 && f.vendor.data.size() == 510 && f.vendor.data[250] == 2 && f.vendor.data[509] == 3);
+  // v2, 7 full elements: kept to 6 of them, 1470 bytes at most
+  f = parse(espnow_frame(std::vector<std::vector<uint8_t>>(7, std::vector<uint8_t>(250, 9)), 2));
+  CHECK(f.vendor.name && f.vendor.data.size() == wifi::kVendorMax);
+  // not ESP-NOW: another OUI, another type, another category, a beacon
+  auto m = espnow_frame({hello});
+  m[26] = 0x00;
+  CHECK(!parse(m).vendor.name);
+  m = espnow_frame({hello});
+  m[37] = 5; // the element's type
+  CHECK(!parse(m).vendor.name);
+  m = espnow_frame({hello});
+  m[24] = 4; // a public action frame
+  CHECK(!parse(m).vendor.name);
+  m = espnow_frame({hello});
+  m[0] = 0x80;
+  CHECK(!parse(m).vendor.name);
+  m = espnow_frame({hello}, 1, {0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, 0x80); // Order: an HT control field moves the body
+  CHECK(!parse(m).vendor.name);
+  // malformed: an element longer than the frame; cut inside the first element; too short for one
+  m = espnow_frame({hello});
+  m[33] = 200;
+  CHECK(!parse(m).vendor.name);
+  m = espnow_frame({hello});
+  m.resize(36);
+  CHECK(!parse(m).vendor.name);
+  m = espnow_frame({hello});
+  m[33] = 4;
+  CHECK(!parse(m).vendor.name);
+  // v2 whose second element is broken: the first is kept
+  m = espnow_frame({a, c}, 2);
+  m[32 + 2 + 255 + 1] = 250; // the second's length, past the end
+  f = parse(m);
+  CHECK(f.vendor.name && f.vendor.data.size() == 250);
+  // encrypted: to one station with addr3 broadcast is ESP-NOW's addressing; to a group address is not
+  f = parse(espnow_frame({hello}, 1, {0x24, 0x0a, 0xc4, 0, 0, 2}, 0x40));
+  CHECK(f.vendor.name && f.vendor.encrypted && f.vendor.data.empty());
+  CHECK(!parse(espnow_frame({hello}, 1, {0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, 0x40)).vendor.name);
+  m = espnow_frame({hello}, 1, {0x24, 0x0a, 0xc4, 0, 0, 2}, 0x40);
+  m[16] = 0x24; // addr3 not broadcast
+  CHECK(!parse(m).vendor.name);
+}
+
+// An ESP-NOW frame on the air at ESP-NOW's default PHY (1 Mb/s 802.11b, long preamble), unicast and
+// ACKed a SIFS later: decoded whole, its header and payload read.
+static void test_espnow_air() {
+  std::vector<uint8_t> body = {'W', 'S', 'D', 'R', 7, 0, 0, 0, 0};
+  for (int i = 0; i < 241; i++)
+    body.push_back(static_cast<uint8_t>(i)); // 250 bytes
+  const std::array<uint8_t, 6> to = {2, 0x11, 0x22, 0x33, 0x44, 0x55}; // (the ACK dsss_frame adds goes to it)
+  const auto mac = espnow_frame({body}, 1, to, 0x08); // a retry
+  size_t at = 0, nbytes = 0;
+  const auto x = dsss_frame(1, 0, 15, 40e3, 0, at, nbytes, "", 0.05f, 0, false, true, mac);
+  const double fs = 40e6;
+  wifi::Decoder dec;
+  dec.reset(fs, 2422e6);
+  std::vector<wifi::Frame> got;
+  for (size_t i = 0; i < x.size(); i += 8192) {
+    const size_t n = std::min<size_t>(8192, x.size() - i);
+    dec.feed(&x[i], n, static_cast<double>(i + n) / fs, got);
+  }
+  int esp = 0;
+  for (const auto &f : got) {
+    if (!f.vendor.name)
+      continue;
+    esp++;
+    CHECK(f.fmt == 'B' && f.rate_mbps == 1 && f.mac && f.type == 0 && f.subtype == 13);
+    CHECK(f.has_ta && f.ta == (std::array<uint8_t, 6>{0x24, 0x0a, 0xc4, 0, 0, 1}) && f.ra == to);
+    CHECK(f.seq == 0x123 && f.retry && !f.prot);
+    CHECK(std::string(f.vendor.name) == "espnow" && f.vendor.version == 1 && f.vendor.data == body);
+  }
+  CHECK(esp == 1);
+}
+
 static void test_ssid_text() {
   auto t = [](const std::string &b) { return wifi::ssid_text(reinterpret_cast<const uint8_t *>(b.data()), b.size()); };
   CHECK(t("homelab") == "homelab");
@@ -2088,6 +2204,31 @@ static int wifi_scan(const char *path) {
   for (const auto &[k, n] : senders)
     if (n >= 3)
       std::printf("  sender %s  x%d\n", k.c_str(), n);
+  // ESP-NOW, by sender and destination; the bench firmware's payloads ("WSDR", u32 counter, ...)
+  // say which were sent, so the counters show what was missed
+  struct Esp { int n = 0, retry = 0, enc = 0, v = 0; size_t len = 0; std::set<uint32_t> ctr; };
+  std::map<std::string, Esp> esp;
+  for (const auto &fr : got) {
+    if (!fr.vendor.name || std::string(fr.vendor.name) != "espnow")
+      continue;
+    Esp &e = esp[hex(fr.ta) + " -> " + hex(fr.ra)];
+    e.n++;
+    e.retry += fr.retry;
+    e.enc += fr.vendor.encrypted;
+    e.v = fr.vendor.version;
+    e.len = std::max(e.len, fr.vendor.data.size());
+    const auto &d = fr.vendor.data;
+    if (d.size() >= 8 && std::equal(d.begin(), d.begin() + 4, "WSDR"))
+      e.ctr.insert(d[4] | d[5] << 8 | d[6] << 16 | static_cast<uint32_t>(d[7]) << 24);
+  }
+  for (const auto &[k, e] : esp) {
+    std::printf("  ESP-NOW %s: %d frames (v%d, up to %zu bytes, %d retries, %d encrypted)", k.c_str(), e.n, e.v, e.len, e.retry, e.enc);
+    if (!e.ctr.empty()) {
+      const uint32_t lo = *e.ctr.begin(), hi = *e.ctr.rbegin();
+      std::printf("; counters %u..%u: %zu of %u (%.1f %%)", lo, hi, e.ctr.size(), hi - lo + 1, 100.0 * static_cast<double>(e.ctr.size()) / (hi - lo + 1));
+    }
+    std::printf("\n");
+  }
   return 0;
 }
 
@@ -2112,6 +2253,8 @@ int main(int argc, char **argv) {
   test_wifi_points();
   test_ht_points();
   test_ssid_text();
+  test_espnow_parse();
+  test_espnow_air();
   test_dsss_beacon();
   test_signals();
   test_video();

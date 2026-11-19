@@ -2,6 +2,7 @@
 // The frame inspector: one Wi-Fi frame's equalised subcarriers as a constellation (L-SIG, the HT/VHT
 // signal fields, a legacy frame's first payload symbols), with its EVM, SNR and carrier offset.
 import { useEffect, useRef, useState } from 'react';
+import { Payload } from './frames/Payload';
 import type { FramePoints } from './protocol';
 
 const FORMAT: Record<string, string> = { L: 'Legacy OFDM', H: '802.11n (HT)', V: '802.11ac (VHT)', X: '802.11ax/be (HE/EHT)', B: '802.11b' };
@@ -106,7 +107,7 @@ export function Constellation(p: { data: FramePoints | null; error: string | nul
   return (
     <aside className={left ? 'inspector left' : 'inspector'} aria-label="Frame inspector">
       <header>
-        <b>Frame constellation</b>
+        <b>{d?.proto ? 'Frame' : 'Frame constellation'}</b>
         <span className="spacer" />
         <button
           className="x"
@@ -128,7 +129,27 @@ export function Constellation(p: { data: FramePoints | null; error: string | nul
       ) : !d ? (
         <p className="note">Loading…</p>
       ) : d.fmt === 'B' ? (
-        <p className="note">An 802.11b frame ({d.mhz.toFixed(0)} MHz): DSSS carries no OFDM subcarriers to show.</p>
+        d.proto ? (
+          <>
+            <dl className="kv">
+              <dt>Frame</dt>
+              <dd>
+                802.11b · {d.mhz.toFixed(0)} MHz · {d.len} bytes at {d.rate === 5 ? 5.5 : d.rate} Mb/s
+              </dd>
+              {d.ta && (
+                <>
+                  <dt>From</dt>
+                  <dd>{d.ta}</dd>
+                </>
+              )}
+              <dt>SNR</dt>
+              <dd>{d.snr.toFixed(1)} dB (despread)</dd>
+            </dl>
+            <Payload v={d.proto} />
+          </>
+        ) : (
+          <p className="note">An 802.11b frame ({d.mhz.toFixed(0)} MHz): DSSS carries no OFDM subcarriers to show.</p>
+        )
       ) : (
         <>
           <canvas ref={ref} className="iq" />
@@ -178,6 +199,7 @@ export function Constellation(p: { data: FramePoints | null; error: string | nul
               {Math.abs(d.cfo_ppm).toFixed(1)} ppm)
             </dd>
           </dl>
+          {d.proto && <Payload v={d.proto} />}
           <p className="note">
             {nData > 0
               ? `Payload: its first ${nData / (d.fmt === 'L' ? 48 : 52)} OFDM symbol${nData === (d.fmt === 'L' ? 48 : 52) ? '' : 's'}${
