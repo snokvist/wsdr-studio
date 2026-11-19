@@ -29,7 +29,7 @@ work too.
 | `hz N` | frames a second |
 | `txpower dBm` | transmit power, 2–20 dBm (some C3 SuperMini boards transmit properly only around 8.5) |
 | `go [N]` / `stop` | send N frames (or until stop) |
-| `stats` / `reset` / `help` | this board's MAC, settings and counts; zero them; the list |
+| `stats` / `reset` / `help` | this board's MAC, settings and counts; stop sending and zero them; the list |
 
 Payload: `"WSDR"`, a u32 counter (little-endian), u8 mode, u8 rate index, then filler bytes.
 

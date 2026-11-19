@@ -838,7 +838,7 @@ void Decoder::scan(std::vector<Frame> &out) {
   }
   const uint64_t min_plateau = 50 * static_cast<uint64_t>(_dec), max_plateau = 400 * static_cast<uint64_t>(_dec);
   // the 802.11b detector: lag 1 us, window 10 us; a term per 0.1 us (the lag product summed over it,
-  // as a unit phasor), 100 terms a window, kept in rings to slide the window. Squared, the DBPSK
+  // as a unit phasor), 100 terms a window, kept in a ring to slide the window. Squared, the DBPSK
   // preamble and header's +-1 go; to the 4th power, a DQPSK payload's quarter turns go too (2 Mb/s
   // frames stay on), at the cost of four times the phase noise: a weak frame (~5 dB over the noise
   // in its 20 MHz) reads ~0.5 squared and ~0.15 to the 4th; noise ~0.09 either way. The larger counts.
@@ -1115,7 +1115,7 @@ void Decoder::finish(std::vector<Frame> &out) {
     if (ok && _points)
       p.f.pts = std::move(g.pts); // (the header's own, from fewer symbols, otherwise)
     if (ok && g.mac) {
-      static_cast<MacFields &>(p.f) = std::move(static_cast<MacFields &>(g)); // its timing and channel stay
+      static_cast<MacFields &>(p.f) = std::move(static_cast<MacFields &>(g)); // its PHY fields (timing, centre_hz, SNR) stay
     }
     out.push_back(std::move(p.f));
     _pend.erase(_pend.begin() + static_cast<long>(i));

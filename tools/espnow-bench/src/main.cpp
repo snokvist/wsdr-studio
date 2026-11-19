@@ -42,7 +42,7 @@ bool have_peer = false;
 // (the counts are shared by the sender task, the Wi-Fi task's callbacks and the console: under `mux`)
 portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
 uint32_t sent, send_ok, send_fail, send_err, counter;
-uint32_t epoch; // bumped by a reset: a send that straddles one is not counted
+uint32_t epoch, sent_epoch; // bumped by a reset: a send (and its callback) that straddles one is not counted
 
 struct {
   uint8_t mac[6];
@@ -83,10 +83,12 @@ void on_sent(const esp_now_send_info_t *, esp_now_send_status_t status) {
 void on_sent(const uint8_t *, esp_now_send_status_t status) {
 #endif
   portENTER_CRITICAL(&mux);
-  if (status == ESP_NOW_SEND_SUCCESS)
-    send_ok++;
-  else
-    send_fail++;
+  if (sent_epoch == epoch) {
+    if (status == ESP_NOW_SEND_SUCCESS)
+      send_ok++;
+    else
+      send_fail++;
+  }
   portEXIT_CRITICAL(&mux);
 }
 
@@ -112,6 +114,15 @@ void on_recv(const esp_now_recv_info_t *info, const uint8_t *d, int n) { count_r
 void on_recv(const uint8_t *src, const uint8_t *d, int n) { count_rx(src, d, n); }
 #endif
 
+// The tx tally, a copy taken under the lock (printing under it is not allowed)
+void print_tx(const char *what, bool sending) {
+  portENTER_CRITICAL(&mux);
+  const uint32_t c = counter, n_sent = sent, ok = send_ok, fail = send_fail, err = send_err;
+  portEXIT_CRITICAL(&mux);
+  Serial.printf("%s: counter %lu, sent %lu (acked/ok %lu, failed %lu, not queued %lu)%s\n", what, (unsigned long)c, (unsigned long)n_sent,
+                (unsigned long)ok, (unsigned long)fail, (unsigned long)err, sending ? ", sending" : "");
+}
+
 void sender(void *) {
   static uint8_t buf[kMaxSize];
   for (;;) {
@@ -129,6 +140,7 @@ void sender(void *) {
     while (running && tx) {
       portENTER_CRITICAL(&mux);
       const uint32_t n = counter, e = epoch;
+      sent_epoch = e;
       portEXIT_CRITICAL(&mux);
       memcpy(buf, "WSDR", 4);
       memcpy(buf + 4, &n, 4);
@@ -153,11 +165,7 @@ void sender(void *) {
       const int64_t wait = next - esp_timer_get_time();
       vTaskDelay(wait > 1000 ? pdMS_TO_TICKS(wait / 1000) : 1);
     }
-    portENTER_CRITICAL(&mux); // (a copy: printing under the lock is not allowed)
-    const uint32_t c = counter, n_sent = sent, ok = send_ok, fail = send_fail, err = send_err;
-    portEXIT_CRITICAL(&mux);
-    Serial.printf("stopped: counter %lu, sent %lu (acked/ok %lu, failed %lu, not queued %lu)\n", (unsigned long)c, (unsigned long)n_sent,
-                  (unsigned long)ok, (unsigned long)fail, (unsigned long)err);
+    print_tx("stopped", false);
   }
 }
 
@@ -182,14 +190,12 @@ void stats() {
   esp_now_get_version(&v);
 #endif
   portENTER_CRITICAL(&mux); // (a copy: printing under the lock is not allowed)
-  const uint32_t c = counter, n_sent = sent, ok = send_ok, fail = send_fail, err = send_err;
   const auto r = rx;
   portEXIT_CRITICAL(&mux);
   Serial.printf("me %s (ESP-NOW v%lu), %s, channel %d, mode %s, rate %s, %d bytes, %d Hz\n", WiFi.macAddress().c_str(), (unsigned long)v,
                 tx ? "tx" : "rx", chan, kModes[mode], kRates[rate].name, size, hz);
   if (tx)
-    Serial.printf("tx: counter %lu, sent %lu (acked/ok %lu, failed %lu, not queued %lu)%s\n", (unsigned long)c, (unsigned long)n_sent,
-                  (unsigned long)ok, (unsigned long)fail, (unsigned long)err, running ? ", sending" : "");
+    print_tx("tx", running);
   else if (r.any)
     Serial.printf("rx from %02x:%02x:%02x:%02x:%02x:%02x: %lu frames, counters %lu..%lu (%lu of %lu)\n", r.mac[0], r.mac[1], r.mac[2], r.mac[3],
                   r.mac[4], r.mac[5], (unsigned long)r.n, (unsigned long)r.lo, (unsigned long)r.hi, (unsigned long)r.n,
@@ -198,18 +204,18 @@ void stats() {
     Serial.println("rx: nothing yet");
 }
 
-void reset_counts() {
-  portENTER_CRITICAL(&mux);
-  counter = sent = send_ok = send_fail = send_err = 0;
-  epoch++;
-  memset(&rx, 0, sizeof rx);
-  portEXIT_CRITICAL(&mux);
-}
-
 void reset_rx() {
   portENTER_CRITICAL(&mux);
   memset(&rx, 0, sizeof rx);
   portEXIT_CRITICAL(&mux);
+}
+
+void reset_counts() {
+  portENTER_CRITICAL(&mux);
+  counter = sent = send_ok = send_fail = send_err = 0;
+  epoch++;
+  portEXIT_CRITICAL(&mux);
+  reset_rx();
 }
 
 void command(String line) {
@@ -256,6 +262,7 @@ void command(String line) {
   } else if (c == "stop") {
     running = false;
   } else if (c == "reset") {
+    running = false; // (a reset mid-run would put counters out of order in one recording)
     reset_counts();
   } else if (c == "stats") {
     stats();
