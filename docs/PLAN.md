@@ -120,6 +120,8 @@ B6 protocol → C → B5 → D2/D3 → E throughout. Commit per step.
 Soapy port to Receiver; A/B coherence and phase (needs the ~400 ns lead removed); two-file A+B
 SigMF; remote `--listen` (needs auth); USB 3 switch without rtw88; rtw88 handover/reattach; band
 scan; burst detector; playback; 80 MS/s snapshot mode.
+New decoders (transmitter audio, drone Remote ID, radar, V2X car messages, ExpressLRS and more): see
+[FUTURE-DECODERS.md](FUTURE-DECODERS.md).
 
 ## Review outcomes (2026-10-25)
 Independent review against the wifi-sdr code. Taken: on_bank runs on the libusb reaper thread
