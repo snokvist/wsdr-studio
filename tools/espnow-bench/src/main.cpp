@@ -194,6 +194,10 @@ void command(String line) {
         mode = i;
     if ((mode == MODE_UCAST || mode == MODE_ENC) && !have_peer)
       Serial.println("set the receiver first: peer <mac> (its \"stats\" prints it)");
+  } else if (c == "peer" && a == "none") {
+    if (have_peer)
+      esp_now_del_peer(peer);
+    have_peer = false;
   } else if (c == "peer" && parse_mac(a, peer)) {
     have_peer = true;
     if (!tx)
@@ -206,6 +210,11 @@ void command(String line) {
     size = constrain(static_cast<int>(a.toInt()), 10, kMaxSize);
   } else if (c == "hz" && a.length()) {
     hz = constrain(static_cast<int>(a.toInt()), 1, 500);
+  } else if (c == "txpower" && a.length()) { // dBm (C3 SuperMini boards often transmit only at a low setting)
+    const esp_err_t e = esp_wifi_set_max_tx_power(static_cast<int8_t>(constrain(a.toFloat(), 2.0f, 20.0f) * 4));
+    int8_t q = 0;
+    esp_wifi_get_max_tx_power(&q);
+    Serial.printf("tx power %.2f dBm%s\n", q / 4.0, e == ESP_OK ? "" : " (refused)");
   } else if (c == "go") {
     count = a.length() ? a.toInt() : 0;
     running = tx;
@@ -218,7 +227,7 @@ void command(String line) {
     stats();
     return;
   } else if (c == "help" || c.isEmpty()) {
-    Serial.println("role tx|rx · chan N · mode bcast|ucast|absent|enc · peer MAC · rate 1L|2L|2S|11L|6M|MCS0 · size N · hz N · go [N] · stop · "
+    Serial.println("role tx|rx · chan N · mode bcast|ucast|absent|enc · peer MAC|none · rate 1L|2L|2S|11L|6M|MCS0 · size N · hz N · txpower dBm · go [N] · stop · "
                    "reset · stats");
     return;
   } else {

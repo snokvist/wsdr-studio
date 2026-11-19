@@ -23,10 +23,11 @@ work too.
 | `role tx\|rx` | sender (default) or receiver |
 | `chan N` | Wi-Fi channel, 1–13 (default 6) |
 | `mode bcast\|ucast\|absent\|enc` | broadcast, unicast to `peer` (ACKed), unicast to nobody (every frame retried), encrypted unicast to `peer` |
-| `peer MAC` | on the sender: the receiver; on the receiver: the sender (needed to decrypt `enc`) |
+| `peer MAC\|none` | on the sender: the receiver; on the receiver: the sender, as an encrypted peer (needed to decrypt `enc`; `none` removes it, so plain frames from it are taken) |
 | `rate 1L\|2L\|2S\|11L\|6M\|MCS0` | PHY rate (1L, 1 Mb/s long preamble, is ESP-NOW's default) |
 | `size N` | payload bytes, 10–250 |
 | `hz N` | frames a second |
+| `txpower dBm` | transmit power, 2–20 dBm (some C3 SuperMini boards transmit properly only around 8.5) |
 | `go [N]` / `stop` | send N frames (or until stop) |
 | `stats` / `reset` / `help` | this board's MAC, settings and counts; zero them; the list |
 
@@ -46,3 +47,10 @@ With `ESPNOW_TIMES=1` it also lists each numbered frame's time and SNR, to find 
 
 What wsdr-studio decodes whole: 1 and 2 Mb/s 802.11b with the long preamble, and 6 Mb/s OFDM. `2S`, `11L`
 and `MCS0` frames are seen without their payload. An encrypted frame is named ESP-NOW by its addressing only.
+
+## Notes from the first bench (2026-11-19)
+
+- **A C3 SuperMini that transmits badly.** One of ours sent almost nothing at the default and 19.5 dBm: a T-Display-S3 next to it received 18 of 81 frames, wsdr-studio 1 of 100. At `txpower 5` it was 100 of 100 for both. Its receiver was fine at every setting. A unicast sender only sees ACKs from it at that low setting.
+- **No ACK, no data retry.** An ESP32 whose unicast frame is not acknowledged sends RTS frames (about 32), not the data again.
+- **ACKs at 6 Mb/s.** The C3 acknowledges 1 Mb/s ESP-NOW with 6 Mb/s OFDM ACKs.
+
