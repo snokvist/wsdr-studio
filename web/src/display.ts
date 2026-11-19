@@ -6,7 +6,8 @@
 import { channelsIn } from './channels';
 import { TURBO } from './colormap';
 import { nearestTransmitter, videoText } from './fpv';
-import type { OtherSignal, Row, WifiFrame } from './protocol';
+import type { OtherSignal, Row, WifiFrame, VendorInfo } from './protocol';
+import { BROADCAST, vendorLabel } from './frames';
 
 export type DisplayOpts = {
   dbMin: number; dbMax: number; // spectrum scale (dBFS)
@@ -47,7 +48,7 @@ const transmitterAt = (marks: Mark[], hz: number) =>
   nearestTransmitter(marks.filter((m) => m[3] === 'A').map((m) => ({ mhz: m[1], line: m[4], dev: m[2] })), hz);
 
 type Mark = [t: number, mhz: number, bw: number, fmt: WifiFrame[3] | OtherSignal[3], rate: number, len: number, us: number, snr: number,
-  ta?: string | null, bssid?: string | null, ssid?: string | null, ch?: number];
+  ta?: string | null, bssid?: string | null, ssid?: string | null, ch?: number, vendor?: VendorInfo];
 const isWifiFmt = (k: Mark[3]): k is WifiFrame[3] => k in WIFI_NAME;
 const isWifi = (m: Mark) => isWifiFmt(m[3]);
 // A view on a stitched axis.
@@ -803,7 +804,18 @@ export class Display {
     const from: Record<string, number> = {};
     for (const k of hit) if (k.f[8]) from[this.wifiNames.get(k.f[8]) ?? k.f[8]] = (from[this.wifiNames.get(k.f[8]) ?? k.f[8]] ?? 0) + 1;
     const who = Object.entries(from).sort((a, b) => b[1] - a[1]).slice(0, 2).map(([k]) => k);
-    return `Wi-Fi ${ch}: ${hit.length} frame${hit.length > 1 ? 's' : ''} (${kinds})${rate} · SNR ${snr[snr.length >> 1].toFixed(0)} dB${who.length ? ` · from ${who.join(', ')}` : ''}${other ? ` · ${other}` : ''}${!analogHere && hit.some((k) => (this.wifiIds.get(k.f) ?? -1) >= this.keptFrom) ? ' · click: its constellation' : ''}`;
+    // vendor protocols among them (ESP-NOW, ...): how many, to whom
+    const vend: Record<string, { n: number; to: Set<string> }> = {};
+    for (const k of hit) {
+      const v = k.f[12];
+      if (!v) continue;
+      const e = (vend[vendorLabel(v) + (v.enc ? ' (encrypted)' : '')] ??= { n: 0, to: new Set() });
+      e.n++;
+      e.to.add(v.to === BROADCAST ? 'broadcast' : v.to);
+    }
+    const vtext = Object.entries(vend).map(([k, e]) => ` · ${k} ${e.n} → ${[...e.to].slice(0, 2).join(', ')}`).join('');
+    const click = !analogHere && hit.some((k) => (this.wifiIds.get(k.f) ?? -1) >= this.keptFrom) ? (vtext ? ' · click: the frame' : ' · click: its constellation') : '';
+    return `Wi-Fi ${ch}: ${hit.length} frame${hit.length > 1 ? 's' : ''} (${kinds})${rate} · SNR ${snr[snr.length >> 1].toFixed(0)} dB${who.length ? ` · from ${who.join(', ')}` : ''}${vtext}${other ? ` · ${other}` : ''}${click}`;
   }
 
   // e.g. "Bluetooth 3, narrowband 1 · 2426 MHz · 366 µs"; analog video first, on its own (the

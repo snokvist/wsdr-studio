@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 #include "wifi.h"
+#include "vendor_frames.h"
 
 #include <algorithm>
 #include <array>
@@ -354,14 +355,23 @@ std::string utf8(const uint8_t *p, size_t n) {
   return s;
 }
 
-// A MAC frame whose FCS was good: its type, sender and, for beacons and probe responses, the network
-// (BSSID, name, primary channel). Nothing else is read.
+// A MAC frame whose FCS was good (by: with its FCS): its type, addresses, sequence number, flags and,
+// for beacons and probe responses, the network (BSSID, name, primary channel); a management frame a
+// vendor protocol recognises, its payload (vendor_frames.h). Nothing else is read.
 void parse_mac(const std::vector<uint8_t> &by, Frame &f) {
   if ((by[0] & 3) != 0 || ((by[0] >> 2) & 3) == 3)
     return; // not protocol version 0, or a reserved type: no header to read
   f.mac = true;
   f.type = (by[0] >> 2) & 3;
   f.subtype = by[0] >> 4;
+  f.retry = by[1] & 0x08;
+  f.prot = by[1] & 0x40;
+  if (by.size() >= 10)
+    std::copy(by.begin() + 4, by.begin() + 10, f.ra.begin());
+  if (f.type != 1 && by.size() >= 28)
+    f.seq = (by[22] | by[23] << 8) >> 4;
+  if (f.type == 0 && by.size() >= 28)
+    parse_vendor(by.data(), by.size() - 4, f);
   // CTS and ACK carry no sender; a control wrapper (7) another layout
   const bool no_ta = f.type == 1 && (f.subtype == 12 || f.subtype == 13 || f.subtype == 7);
   if (!no_ta && by.size() >= 20) {
@@ -750,7 +760,7 @@ void Decoder::reset(double fs, double centre_hz) {
   _buf.clear();
   _pend.clear();
   _bjobs.clear();
-  _din = false;
+  _din = _dheld = false;
   _dloud = _dseg = _bdone = 0;
   _bempty = _bpart = 0;
   _dc = 0;
@@ -828,10 +838,12 @@ void Decoder::scan(std::vector<Frame> &out) {
   }
   const uint64_t min_plateau = 50 * static_cast<uint64_t>(_dec), max_plateau = 400 * static_cast<uint64_t>(_dec);
   // the 802.11b detector: lag 1 us, window 10 us; a term per 0.1 us (the lag product summed over it,
-  // as a unit phasor, to the 4th power: noise gives |mean| ~0.09, an 802.11b frame near 1), 100 terms
-  // a window, kept in a ring to slide the window
+  // as a unit phasor), 100 terms a window, kept in a ring to slide the window. Squared, the DBPSK
+  // preamble and header's +-1 go; to the 4th power, a DQPSK payload's quarter turns go too (2 Mb/s
+  // frames stay on), at the cost of four times the phase noise: a weak frame (~5 dB over the noise
+  // in its 20 MHz) reads ~0.5 squared and ~0.15 to the 4th; noise ~0.09 either way. The larger counts.
   const uint64_t us = 20 * static_cast<uint64_t>(_dec), L2 = us, W2 = 10 * us, S = 2 * static_cast<uint64_t>(_dec), NT = W2 / S;
-  std::complex<double> q4 = 0;
+  std::complex<double> q2 = 0, q4 = 0;
   const auto term = [&](uint64_t k) { // (written out: std::complex's product checks for NaN)
     const cf *p = &_buf[k - _abs0], *q = p + L2;
     float re = 0, im = 0;
@@ -842,16 +854,16 @@ void Decoder::scan(std::vector<Frame> &out) {
     const float a = re * re + im * im;
     if (!(a > 1e-30f))
       return cf(0);
-    // z^2 / |z|^2, squared (scaled before squaring: tiny samples would underflow |z|^4)
-    const float u = (re * re - im * im) / a, v = 2 * re * im / a;
-    return cf(u * u - v * v, 2 * u * v);
+    return cf((re * re - im * im) / a, 2 * re * im / a); // z^2 / |z|^2 (scaled: tiny samples would underflow |z|^4)
   };
+  const auto sq = [](cf z) { return std::complex<double>(z.real() * z.real() - z.imag() * z.imag(), 2 * z.real() * z.imag()); };
   uint64_t tick = 0, slot = 0; // samples to the next term; the ring's oldest term
   if (_dsss) {
-    _z4.assign(NT, 0);
+    _z2.assign(NT, 0);
     for (uint64_t j = 0; j < NT; j++) {
-      _z4[j] = term(_scan + j * S);
-      q4 += std::complex<double>(_z4[j]);
+      _z2[j] = term(_scan + j * S);
+      q2 += std::complex<double>(_z2[j]);
+      q4 += sq(_z2[j]);
     }
   }
   for (uint64_t i = _scan; i < limit; i++) {
@@ -880,15 +892,24 @@ void Decoder::scan(std::vector<Frame> &out) {
       tick = S - 1;
       // on above 0.3 while loud; off below 0.12, or after 2 us without power (a frame and its ACK a
       // SIFS later are two; a spur cannot hold it on)
-      const double m2 = std::norm(q4) / static_cast<double>(NT * NT); // (the mean's magnitude, squared)
+      const double m2 = std::max(std::norm(q2), std::norm(q4)) / static_cast<double>(NT * NT); // (the mean's magnitude, squared)
       const bool loud = _noise > 0 && p2 > 2 * _noise * static_cast<double>(W);
       if (loud)
         _dloud = i;
+      else if (!_din)
+        _dheld = false; // (the power dropped: whatever comes next is another frame, an ACK after a SIFS, say)
+      if (_dheld && i - _dheld_end > 20 * us)
+        _dheld = false;
       if (!_din && m2 > 0.3 * 0.3 && loud) {
         _din = true;
-        _dstart = _dseg = i;
-        _ndet++;
-        _bpart = 0; // (_bempty stays: a microwave oven switches with the mains, every on-phase a new detection)
+        if (_dheld) { // back on after a dip, the power held throughout: the same frame, from its start
+          _dstart = _dseg = _dheld_start;
+          _dheld = false;
+        } else {
+          _dstart = _dseg = i;
+          _ndet++;
+          _bpart = 0; // (_bempty stays: a microwave oven switches with the mains, every on-phase a new detection)
+        }
       } else if (_din && i - _dseg >= 800 * us && m2 >= 0.12 * 0.12 && i - _dloud <= 2 * us) {
         // still on after 800 us (a tone or spur is coherent too and can hold it on): this part is
         // probed now (its first ms, so the parts overlap), the next part starts here
@@ -902,13 +923,19 @@ void Decoder::scan(std::vector<Frame> &out) {
         _din = false;
         // (shorter than the long preamble and header, 192 us: nothing to decode; the window trails
         // the frame's end by 10 us)
-        if (i - _dstart >= 190 * us)
+        if (i - _dstart >= 190 * us) {
           _bjobs.push_back({_dseg > _abs0 + 10 * us ? _dseg - 10 * us : _abs0, i + 10 * us, i, _ndet}); // (its length
           // comes from its header: the detector may end early, a collision mid-frame)
+        } else if (i - _dloud <= 2 * us) { // the coherence dipped, the power held: it may go on (_dheld)
+          _dheld = true;
+          _dheld_start = _dstart;
+          _dheld_end = i;
+        }
       }
-      const cf z4 = term(i + W2); // the term at i leaves, the one at i + W2 takes its place
-      q4 += std::complex<double>(z4) - std::complex<double>(_z4[slot]);
-      _z4[slot] = z4;
+      const cf z2 = term(i + W2); // the term at i leaves, the one at i + W2 takes its place
+      q2 += std::complex<double>(z2) - std::complex<double>(_z2[slot]);
+      q4 += sq(z2) - sq(_z2[slot]);
+      _z2[slot] = z2;
       if (++slot == NT)
         slot = 0;
     }
@@ -935,6 +962,8 @@ void Decoder::scan(std::vector<Frame> &out) {
   const uint64_t margin = 10 * 20 * static_cast<uint64_t>(_dec); // 10 us
   if (_din) // a frame still going on, and ended ones not yet decoded
     from = std::min(from, _dseg > margin ? _dseg - margin + pre : pre);
+  if (_dheld) // a piece that may yet be a frame's start
+    from = std::min(from, _dheld_start > margin ? _dheld_start - margin + pre : pre);
   for (const auto &b : _bjobs)
     from = std::min(from, b.start + pre);
   const uint64_t keep = from > pre ? from - pre : 0;
@@ -1086,16 +1115,7 @@ void Decoder::finish(std::vector<Frame> &out) {
     if (ok && _points)
       p.f.pts = std::move(g.pts); // (the header's own, from fewer symbols, otherwise)
     if (ok && g.mac) {
-      Frame &f = p.f; // its timing and channel stay; the MAC fields come from the whole decode
-      f.mac = true;
-      f.type = g.type;
-      f.subtype = g.subtype;
-      f.has_ta = g.has_ta;
-      f.ta = g.ta;
-      f.beacon = g.beacon;
-      f.bssid = g.bssid;
-      f.ssid = g.ssid;
-      f.channel = g.channel;
+      static_cast<MacFields &>(p.f) = std::move(static_cast<MacFields &>(g)); // its PHY fields (timing, centre_hz, SNR) stay
     }
     out.push_back(std::move(p.f));
     _pend.erase(_pend.begin() + static_cast<long>(i));

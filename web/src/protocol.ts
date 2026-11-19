@@ -26,8 +26,12 @@ export type DspSettings = { fft: number; rows_per_s: number; paths: 'a' | 'b' | 
 // A 6 Mb/s frame decoded whole adds its sender's address, and a beacon its network (BSSID, name, channel).
 export type WifiFrame = [
   t: number, mhz: number, bw: number, fmt: 'L' | 'H' | 'V' | 'X' | 'B', rate: number, len: number, us: number, snr: number,
-  ta?: string | null, bssid?: string | null, ssid?: string | null, ch?: number,
+  ta?: string | null, bssid?: string | null, ssid?: string | null, ch?: number, vendor?: VendorInfo,
 ];
+// A vendor protocol in a management frame (src/vendor_frames.h; web/src/frames): its name, version,
+// destination, sequence number (-1 none), whether it was a retry, encrypted, its payload's length;
+// the frame inspector's copy ("points") adds the payload as hex.
+export type VendorInfo = { name: string; version: number; to: string; seq: number; retry: boolean; enc: boolean; len: number; hex?: string };
 // One frame's equalised subcarriers (the "points" command; see Engine::points): z holds I, Q pairs at
 // `scale` per unit: n_lsig L-SIG points, n_sig2 HT-SIG / VHT-SIG-A ones, then the payload's (bits per
 // subcarrier `bits`, 0: none). EVM in dB (payload: null when none), carrier offset in Hz and ppm.
@@ -35,7 +39,8 @@ export type FramePoints = {
   frame: number; t: number; mhz: number; bw: number; fmt: 'L' | 'H' | 'V' | 'X' | 'B'; rate: number; len: number; snr: number;
   cfo_hz: number; cfo_ppm: number; evm_lsig_db: number; evm_db: number | null; bits: number; n_lsig: number; n_sig2: number;
   scale: number; z: number[];
-  ta?: string; ssid?: string; // a 6 Mb/s frame decoded whole: its sender; a beacon: its network
+  ta?: string; ssid?: string; // a frame decoded whole: its sender; a beacon: its network
+  proto?: VendorInfo; // a vendor protocol's frame, with its payload
   // HT / VHT, from its SIG: why the payload is not shown (0 shown, 1 SIG CRC failed, 2 wider than 20 MHz,
   // 3 not a plain single stream, 4 not received, 5 none: a sounding frame), and when the SIG was read
   // its streams (0: multi-user), width and (not multi-user) MCS

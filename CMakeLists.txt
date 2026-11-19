@@ -26,7 +26,7 @@ find_package(Threads REQUIRED)
 # (not on the include path: its video.h would shadow src/video.h; src/video.cpp includes it by path)
 add_library(kepyur STATIC third_party/kepyur/video.cpp third_party/kepyur/log.cpp)
 
-add_library(studio_core STATIC src/dsp.cpp src/protocol.cpp src/device_scan.cpp src/recorder.cpp src/engine.cpp src/wifi.cpp src/signals.cpp
+add_library(studio_core STATIC src/dsp.cpp src/protocol.cpp src/device_scan.cpp src/recorder.cpp src/engine.cpp src/wifi.cpp src/vendor_frames.cpp src/signals.cpp
             src/tap.cpp src/video.cpp)
 target_include_directories(studio_core PUBLIC src)
 target_link_libraries(studio_core PUBLIC wsdrcore iqdsp kepyur PkgConfig::FFTW3F nlohmann_json::nlohmann_json Threads::Threads)

@@ -35,7 +35,33 @@ struct Points {
   int skip = 0;
 };
 
-struct Frame {
+// What a frame decoded whole says of itself (Frame's base: a whole decode hands it over as one)
+struct MacFields {
+  // 6 Mb/s legacy frames (beacons, ACKs, RTS/CTS, ...) and 1 / 2 Mb/s 802.11b ones are decoded whole;
+  // with a good CRC their MAC header is read (addresses, sequence number, retry and protected bits and,
+  // for beacons and probe responses, the network's name and channel). Payloads are not kept, except
+  // a vendor protocol's (below).
+  bool mac = false;      // decoded, CRC good
+  int type = -1, subtype = -1; // 0 management, 1 control, 2 data
+  bool has_ta = false;   // the sender's address (control frames ACK and CTS carry none)
+  std::array<uint8_t, 6> ra{}, ta{}, bssid{}; // ra: the receiver (addr1; ff:ff:ff:ff:ff:ff broadcast)
+  int seq = -1;          // sequence number (-1: control frames carry none)
+  bool retry = false;    // a retransmission (the same seq again)
+  bool prot = false;     // its body is encrypted
+  // A vendor protocol carried in a management frame (vendor_frames.h), when a parser recognised it:
+  // its name (nullptr: none), version, whether it is encrypted (then no payload) and its payload
+  struct Vendor {
+    const char *name = nullptr;
+    int version = 0;
+    bool encrypted = false;
+    std::vector<uint8_t> data;
+  } vendor;
+  bool beacon = false;   // a beacon or probe response: bssid, ssid, channel
+  std::string ssid;      // as sent (UTF-8 checked; empty: hidden network)
+  int channel = 0;       // from its DS parameter set (0: none)
+};
+
+struct Frame : MacFields {
   double t = 0;          // start (s), on the clock of the samples fed in
   double centre_hz = 0;  // the 20 MHz channel it was decoded on (40 MHz: the pair's centre)
   int bw_mhz = 20;       // 20, or 40 when its preamble is duplicated on the paired channel (5 GHz)
@@ -47,16 +73,6 @@ struct Frame {
   double cfo_hz = 0;     // the sender's carrier against this receiver's tuning (both crystals' errors)
   int ltf_at = 0;        // OFDM: where its first LTF copy sits in the 20 MS/s snippet (a second decode of the same snippet starts there)
   Points pts;            // with Decoder::keep_points
-  // 6 Mb/s legacy frames (beacons, ACKs, RTS/CTS, ...) are decoded whole; with a good CRC their MAC
-  // header is read (only addresses and, for beacons and probe responses, the network's name and
-  // channel: payloads are not kept)
-  bool mac = false;      // decoded, CRC good
-  int type = -1, subtype = -1; // 0 management, 1 control, 2 data
-  bool has_ta = false;   // the sender's address (control frames ACK and CTS carry none)
-  std::array<uint8_t, 6> ta{}, bssid{};
-  bool beacon = false;   // a beacon or probe response: bssid, ssid, channel
-  std::string ssid;      // as sent (UTF-8 checked; empty: hidden network)
-  int channel = 0;       // from its DS parameter set (0: none)
 };
 
 // A network name as received, made safe to show and to write as JSON (see wifi.cpp).
@@ -116,7 +132,14 @@ private:
   uint64_t _dseg = 0;           // where its current segment started (a long one is probed in parts)
   uint64_t _bdone = 0;          // the end of the last frame decoded (absolute): later jobs start there
   uint64_t _dloud = 0;          // the last time (absolute sample) the span was loud
-  std::vector<std::complex<float>> _z4; // the window's terms (a ring), to slide it
+  // a detection the coherence ended before its header was in (< 190 us) while the power held: if it
+  // comes back on within 20 us, still loud, it is the same frame and goes on from that start. (Under
+  // something that keeps the span loud, a tone, the piece may be another frame's and merge with the
+  // next: the probe still finds the next one, as a block whose SFD does not follow moves it on; only
+  // the detection count is one short.)
+  bool _dheld = false;
+  uint64_t _dheld_start = 0, _dheld_end = 0;
+  std::vector<std::complex<float>> _z2; // the window's terms, squared (a ring: to the 4th, their squares), to slide it
   cf _dc = 0;                   // the samples' DC offset (taken out as they arrive)
   std::vector<Job> _bjobs;      // to probe, in order
   uint32_t _ndet = 0;           // detections so far
