@@ -83,6 +83,31 @@ Two mechanisms:
 - **Expectation in Sweden:** passing VW ID./Golf 8 cars near a road, intermittently. No infrastructure. LTE-V2X
   (C-V2X), used by Chinese makes, is a different radio (SC-FDMA) and not decodable by this path.
 
+### 5. ExpressLRS 2.4 GHz RC links (signal finder, then a tap kind)
+
+- **What:** ExpressLRS radio-control links, built on the SX1280/1281.
+  - They hop over 2400–2480 MHz, one packet every 1–20 ms: 50–500 Hz in LoRa mode (chirps about 812 kHz wide), up
+    to 1000 Hz in FLRC mode (FSK-like, about 1 MHz wide, much shorter).
+  - The receiver sends telemetry back on the same hops.
+  - Not encrypted. The binding phrase seeds the hop sequence and the packet checksum.
+- **Tier 1, recognise it (a finder kind, cheap):**
+  - Today the hops are most likely marked as Bluetooth or narrowband.
+  - The LoRa chirp is unmistakable, and the packet interval is fixed and exact.
+  - Mark "ELRS, LoRa/FLRC, N Hz", separate transmitter from telemetry by timing and level, and show signal strength
+    per transmitter. Useful at a field with several pilots, or for hunting interference.
+- **Tier 2, decode packets (a tap kind, optional):**
+  - Demodulate LoRa (dechirp and FFT per symbol) and FLRC (FSK).
+  - With the user's binding phrase: verify the checksums and show stick and switch values, link quality, and the
+    downlink telemetry (whatever the flight controller sends: battery, GPS, attitude).
+  - Without the phrase: other links can be identified but not reliably decoded.
+  - Take the packet formats from the ExpressLRS source (open source), not from memory.
+- **Limit:** the gap-free capture tops out at 40 MS/s, half the 80 MHz hop band, so about half the packets are seen.
+  That's enough to identify a link and track its quality. 80 MS/s covers the band but captures only about a third
+  of the time, and retuning to follow the hops is far too slow.
+- **Sensitivity:** dechirping gives the same LoRa processing gain the real receiver gets. A transmitter across a
+  field is visible; a long-range link at the edge of its range isn't.
+- **Testing:** easy with our own ELRS transmitter and receiver.
+
 ### Smaller ones
 
 - **Zigbee / Thread (IEEE 802.15.4)** at 2405–2480 MHz: O-QPSK, 2 MHz channels. Device discovery and
