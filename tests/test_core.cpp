@@ -878,7 +878,7 @@ static void test_ht_points() {
 // frame starts, `nbytes` its MAC frame's length.
 static std::vector<std::complex<float>> dsss_frame(int rate, size_t pad, double ppm, double cfo, double lead_us, size_t &at, size_t &nbytes,
                                                    const std::string &ssid, float sigma = 0.05f, float dc = 0, bool inoise = false,
-                                                   bool ack = false, const std::vector<uint8_t> &custom = {}) {
+                                                   bool ack = false, const std::vector<uint8_t> &custom = {}, double dip_us = 0) {
   std::mt19937 rng(11);
   std::normal_distribution<float> g(0, 1);
   // a beacon from 02:11:22:33:44:55 for ssid, or (custom) that MAC frame, without its FCS
@@ -991,6 +991,11 @@ static std::vector<std::complex<float>> dsss_frame(int rate, size_t pad, double 
     }
   };
   put(ppdu(mac, rate));
+  // a 12 us burst of noise as strong as the frame, dip_us into it: the detector's coherence drops for
+  // it while the power holds (seen on air near a header's end), the bits despread fine through it
+  if (dip_us > 0)
+    for (size_t i = at + static_cast<size_t>(dip_us * 40), k = 0; k < 480 && i < x.size(); i++, k++)
+      x[i] += std::complex<float>(0.35f * g(rng), 0.35f * g(rng));
   if (ack) { // a SIFS, then an ACK to 02:11:22:33:44:55
     for (int i = 0; i < 400; i++)
       x.push_back(noise() + (on ? other(x.size()) : std::complex<float>(0)));
@@ -1012,7 +1017,7 @@ static std::vector<std::complex<float>> dsss_frame(int rate, size_t pad, double 
 }
 
 static void test_dsss_beacon() {
-  struct Case { int rate; size_t pad; double ppm, cfo, lead; float sigma, dc; bool inoise, ack; };
+  struct Case { int rate; size_t pad; double ppm, cfo, lead; float sigma, dc; bool inoise, ack; double dip = 0; };
   const Case cases[] = {
       {1, 0, 0, 50e3, 0, 0.05f, 0, false, false},      // plain
       {1, 450, 20, 50e3, 0, 0.05f, 0, false, false},   // a 500-byte frame, clocks 20 ppm apart (timing tracked)
@@ -1023,10 +1028,12 @@ static void test_dsss_beacon() {
       {1, 0, 0, 50e3, 0, 0.05f, 0.05f, false, false},  // the adapter's DC offset
       {1, 0, 0, 50e3, 0, 0.05f, 0, false, true},       // its ACK a SIFS later (two frames)
       {1, 0, 0, 50e3, 300, 0.05f, 0, false, true},     // both under a tone that holds the detector on
+      {1, 0, 0, 50e3, 0, 0.05f, 0, false, false, 178}, // the detector's coherence dips at the header's end (the power holds)
+      {1, 0, 0, 50e3, 0, 0.05f, 0, false, true, 178},  // the same, then its ACK a SIFS later (still two frames)
   };
   for (const auto &cs : cases) {
     size_t at = 0, nbytes = 0;
-    const auto x = dsss_frame(cs.rate, cs.pad, cs.ppm, cs.cfo, cs.lead, at, nbytes, "test-ssid", cs.sigma, cs.dc, cs.inoise, cs.ack);
+    const auto x = dsss_frame(cs.rate, cs.pad, cs.ppm, cs.cfo, cs.lead, at, nbytes, "test-ssid", cs.sigma, cs.dc, cs.inoise, cs.ack, {}, cs.dip);
     const double fs = 40e6;
     wifi::Decoder dec;
     dec.reset(fs, 2422e6);
@@ -1054,8 +1061,8 @@ static void test_dsss_beacon() {
     CHECK(b == 1);
     CHECK(acks == (cs.ack ? 1 : 0));
     if (b != 1 || whole != 1 || acks != (cs.ack ? 1 : 0))
-      std::printf("  (802.11b case: %d Mb/s, %zu bytes, %g ppm, %g Hz, lead %g us%s, sigma %g, dc %g, ack %d: %d frames, %d whole, %d acks)\n", cs.rate,
-                  nbytes, cs.ppm, cs.cfo, cs.lead, cs.inoise ? " (noise)" : "", cs.sigma, cs.dc, cs.ack, b, whole, acks);
+      std::printf("  (802.11b case: %d Mb/s, %zu bytes, %g ppm, %g Hz, lead %g us%s, sigma %g, dc %g, ack %d, dip %g: %d frames, %d whole, %d acks)\n",
+                  cs.rate, nbytes, cs.ppm, cs.cfo, cs.lead, cs.inoise ? " (noise)" : "", cs.sigma, cs.dc, cs.ack, cs.dip, b, whole, acks);
   }
 }
 
@@ -2218,14 +2225,21 @@ static int wifi_scan(const char *path) {
     e.v = fr.vendor.version;
     e.len = std::max(e.len, fr.vendor.data.size());
     const auto &d = fr.vendor.data;
-    if (d.size() >= 8 && std::equal(d.begin(), d.begin() + 4, "WSDR"))
+    if (d.size() >= 8 && std::equal(d.begin(), d.begin() + 4, "WSDR")) {
       e.ctr.insert(d[4] | d[5] << 8 | d[6] << 16 | static_cast<uint32_t>(d[7]) << 24);
+      if (std::getenv("ESPNOW_TIMES")) // (each numbered frame's start and SNR, to find a missed one's place)
+        std::printf("  espnow %u at %.6f s, SNR %.1f dB\n", d[4] | d[5] << 8 | d[6] << 16 | static_cast<uint32_t>(d[7]) << 24, fr.t, fr.snr_db);
+    }
   }
   for (const auto &[k, e] : esp) {
     std::printf("  ESP-NOW %s: %d frames (v%d, up to %zu bytes, %d retries, %d encrypted)", k.c_str(), e.n, e.v, e.len, e.retry, e.enc);
     if (!e.ctr.empty()) {
       const uint32_t lo = *e.ctr.begin(), hi = *e.ctr.rbegin();
       std::printf("; counters %u..%u: %zu of %u (%.1f %%)", lo, hi, e.ctr.size(), hi - lo + 1, 100.0 * static_cast<double>(e.ctr.size()) / (hi - lo + 1));
+      int shown = 0;
+      for (uint32_t c = lo; c <= hi && shown < 20; c++)
+        if (!e.ctr.count(c))
+          std::printf("%s%u", shown++ ? " " : "; missing: ", c);
     }
     std::printf("\n");
   }

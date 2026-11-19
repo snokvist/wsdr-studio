@@ -1,2 +1,0 @@
-# Boards on the chip's own USB (Espressif 303a:1001): the console, input too, over USB Serial/JTAG
-CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

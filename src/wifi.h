@@ -128,6 +128,10 @@ private:
   uint64_t _dseg = 0;           // where its current segment started (a long one is probed in parts)
   uint64_t _bdone = 0;          // the end of the last frame decoded (absolute): later jobs start there
   uint64_t _dloud = 0;          // the last time (absolute sample) the span was loud
+  // a detection the coherence ended before its header was in (< 190 us) while the power held: if it
+  // comes back on within 20 us, still loud, it is the same frame and goes on from that start
+  bool _dheld = false;
+  uint64_t _dheld_start = 0, _dheld_end = 0;
   std::vector<std::complex<float>> _z4; // the window's terms (a ring), to slide it
   cf _dc = 0;                   // the samples' DC offset (taken out as they arrive)
   std::vector<Job> _bjobs;      // to probe, in order

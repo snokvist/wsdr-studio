@@ -760,7 +760,7 @@ void Decoder::reset(double fs, double centre_hz) {
   _buf.clear();
   _pend.clear();
   _bjobs.clear();
-  _din = false;
+  _din = _dheld = false;
   _dloud = _dseg = _bdone = 0;
   _bempty = _bpart = 0;
   _dc = 0;
@@ -894,11 +894,20 @@ void Decoder::scan(std::vector<Frame> &out) {
       const bool loud = _noise > 0 && p2 > 2 * _noise * static_cast<double>(W);
       if (loud)
         _dloud = i;
+      else if (!_din)
+        _dheld = false; // (the power dropped: whatever comes next is another frame, an ACK after a SIFS, say)
+      if (_dheld && i - _dheld_end > 20 * us)
+        _dheld = false;
       if (!_din && m2 > 0.3 * 0.3 && loud) {
         _din = true;
-        _dstart = _dseg = i;
-        _ndet++;
-        _bpart = 0; // (_bempty stays: a microwave oven switches with the mains, every on-phase a new detection)
+        if (_dheld) { // back on after a dip, the power held throughout: the same frame, from its start
+          _dstart = _dseg = _dheld_start;
+          _dheld = false;
+        } else {
+          _dstart = _dseg = i;
+          _ndet++;
+          _bpart = 0; // (_bempty stays: a microwave oven switches with the mains, every on-phase a new detection)
+        }
       } else if (_din && i - _dseg >= 800 * us && m2 >= 0.12 * 0.12 && i - _dloud <= 2 * us) {
         // still on after 800 us (a tone or spur is coherent too and can hold it on): this part is
         // probed now (its first ms, so the parts overlap), the next part starts here
@@ -912,9 +921,14 @@ void Decoder::scan(std::vector<Frame> &out) {
         _din = false;
         // (shorter than the long preamble and header, 192 us: nothing to decode; the window trails
         // the frame's end by 10 us)
-        if (i - _dstart >= 190 * us)
+        if (i - _dstart >= 190 * us) {
           _bjobs.push_back({_dseg > _abs0 + 10 * us ? _dseg - 10 * us : _abs0, i + 10 * us, i, _ndet}); // (its length
           // comes from its header: the detector may end early, a collision mid-frame)
+        } else if (i - _dloud <= 2 * us) { // the coherence dipped, the power held: it may go on (_dheld)
+          _dheld = true;
+          _dheld_start = _dstart;
+          _dheld_end = i;
+        }
       }
       const cf z4 = term(i + W2); // the term at i leaves, the one at i + W2 takes its place
       q4 += std::complex<double>(z4) - std::complex<double>(_z4[slot]);
@@ -945,6 +959,8 @@ void Decoder::scan(std::vector<Frame> &out) {
   const uint64_t margin = 10 * 20 * static_cast<uint64_t>(_dec); // 10 us
   if (_din) // a frame still going on, and ended ones not yet decoded
     from = std::min(from, _dseg > margin ? _dseg - margin + pre : pre);
+  if (_dheld) // a piece that may yet be a frame's start
+    from = std::min(from, _dheld_start > margin ? _dheld_start - margin + pre : pre);
   for (const auto &b : _bjobs)
     from = std::min(from, b.start + pre);
   const uint64_t keep = from > pre ? from - pre : 0;
