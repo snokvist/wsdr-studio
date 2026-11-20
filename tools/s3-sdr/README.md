@@ -46,8 +46,9 @@ The prebuilt v0.1.1 image boots to the shell without rfprobe; start it with `app
 python3 s3shell.py "probe gain -1 0" "probe f 2437" "probe tone on 1000000 400" "probe tone off"
 ```
 
-**TX step 0 only.** The bench radiates at TX step 0 (the lowest of 18 steps) with amplitudes up to
-400. `s3lab.py` refuses higher steps (`MAX_STEP`).
+**TX step 0, frames up to step 8.** Tones go out at TX step 0 (the lowest of 18 steps) with
+amplitudes up to 400; `s3lab.py` refuses higher steps for `probe gain` (`MAX_STEP`). Frames need
+more to be decodable (below) and may use up to step 8, for the burst only.
 
 `python3 s3shell.py usj` first also lets the ESP-NOW bench firmware back on: `cd ../espnow-bench && pio run -e tdisplays3 -t upload`.
 
@@ -59,11 +60,12 @@ python3 s3shell.py "probe gain -1 0" "probe f 2437" "probe tone on 1000000 400" 
 ESP-NOW bench's (`WSDR`, a u32 counter, ...), so `test_core --wifi` tallies exactly which arrived.
 
 ```
-probe frames <count> [period ms] [amp] [rate 1|2] [size]    # e.g. probe frames 200 5 400 1 10
+probe frames <count> [period ms] [amp] [rate 1|2] [size] [tx step 0..8]   # e.g. probe frames 200 5 400 1 10 8
 ```
 
 It blocks until the burst is done (60 s at most) and prints what was sent and the counters. The
-firmware itself holds the bench limits: TX step 0, amplitude 400.
+firmware itself holds the bench limits: amplitude 400, TX step 0 for tones and up to 8 for frames,
+back to step 0 after each burst.
 
 How it works: `src/dsss.c` turns a frame into one phase per 1 µs symbol; at the DAC's 40 MS/s one
 symbol is exactly 40 samples, so each sample is a table entry picked by the previous, current and
@@ -116,3 +118,17 @@ python3 tone.py --rx driver=wsdr,bus=6 --offsets sweep --guard --csv sweep.csv  
   ±6 MHz (about −47 dBFS); −6 dB at ±1 MHz and −11 dB at ±0.5 MHz; −10 dB at ±9.5 MHz; a 12 dB dip at
   +7 MHz only. Image −23 to −30 dBc.
 - The 8812BU's floor is its own front-end noise from gain 25 up: more gain doesn't help.
+
+Frames (`decode_level.py --step 8 --count 100`, 8812BU at 10 cm, 20 MS/s, channel 6):
+
+| amplitude | 400 | 283 | 200 | 141 | 100 | 85 | 71 | 60 |
+|---|---|---|---|---|---|---|---|---|
+| 1 Mb/s decoded | 100 % | 95 % | 100 % | 99 % | 96–98 % | 22 % | 16 % | 0 % |
+| 2 Mb/s decoded | 51–60 % | 98 % | 90 % | 59 % | 20 % | | 0 % | |
+
+- At step 0 nothing decodes: a frame spreads the tone's power over ~16 MHz, about −18 to −28 dB SNR here.
+- 2 Mb/s is worse at full amplitude than 3 dB below it: possibly transmitter compression at step 8
+  (not yet checked).
+- `test_core`'s SNR column reads 8–13 dB even where decoding collapses (it is measured on the frames
+  that decode); the amplitude is the level scale to go by.
+- Recordings are ~400 MB each; `--keep` only a few.
