@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 """Send commands to the S3's Zephyr shell and print the replies.
 
-  s3shell.py "app run rfprobe"                 # reboots into rfprobe (the port drops for ~8 s)
+  s3shell.py "multiapp run rfprobe"            # reboots into rfprobe (v0.1.x: "app run")
   s3shell.py "probe gain -1 0" "probe f 2437"
   s3shell.py usj                               # hand the USB port to the ROM for esptool
 """
@@ -15,7 +15,7 @@ from s3lab import S3
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--port", default="/dev/ttyACM0")
+    ap.add_argument("--port", help="the S3's shell (default: the one esp-sdr board's by-id link)")
     ap.add_argument("--wait", type=float, default=3.0, help="longest wait for each reply, s")
     ap.add_argument("commands", nargs="+")
     a = ap.parse_args()

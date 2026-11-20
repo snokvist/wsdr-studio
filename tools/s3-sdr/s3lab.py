@@ -4,6 +4,7 @@
 The S3 runs esp-sdr-zephyr's rfprobe app; the receiver is a wsdr adapter through SoapySDR
 (SOAPY_SDR_PLUGIN_PATH pointing at a wifi-sdr build-soapy folder).
 """
+import glob
 import re
 import time
 
@@ -14,11 +15,19 @@ PROMPT = b"uart:~$"
 MAX_STEP = 0  # the bench radiates at TX step 0 only; raise it here, deliberately, if that changes
 
 
+def find_port():
+    """The S3's shell: the by-id link of an esp-sdr-zephyr board (its tty number changes on replug)."""
+    ports = sorted(glob.glob("/dev/serial/by-id/usb-Zephyr_Project_ESP-SDR*-if00"))
+    if len(ports) != 1:
+        raise RuntimeError(f"{len(ports)} esp-sdr boards on USB; pass --port")
+    return ports[0]
+
+
 class S3:
     """The S3's USB shell. Each command returns once the prompt is back (or after `wait` s)."""
 
-    def __init__(self, port):
-        self.port = serial.Serial(port, 115200, timeout=0.1)
+    def __init__(self, port=None):
+        self.port = serial.Serial(port or find_port(), 115200, timeout=0.1)
         self.cmd("")
 
     def cmd(self, line, wait=3.0):
@@ -35,7 +44,7 @@ class S3:
         return re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", out.decode(errors="replace"))
 
     def setup(self, mhz):
-        """Step 0 and the LO; rfprobe must be running (`app run rfprobe` after a power cycle)."""
+        """Step 0 and the LO; rfprobe must be running (see README: our build starts it at boot)."""
         for c in ("probe gain -1 0", f"probe f {mhz:g}"):
             r = self.cmd(c)
             if "ret 0" not in r:

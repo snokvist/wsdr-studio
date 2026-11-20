@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 """Measure S3 rfprobe tones with a wsdr receiver: level, local floor, image, frequency error.
 
-  tone.py --port /dev/ttyACM0 --rx driver=wsdr,bus=6                  # one tone at +1 MHz
-  tone.py --port /dev/ttyACM0 --rx driver=wsdr,bus=6 --offsets sweep  # across a 20 MHz channel, ~2 min
+  tone.py --rx driver=wsdr,bus=6                  # one tone at +1 MHz
+  tone.py --rx driver=wsdr,bus=6 --offsets sweep  # across a 20 MHz channel, ~2 min
 
 Both radios sit on --mhz. Each tone is read as the mean of --blocks blocks of 2^20 samples
 (19 Hz bins at 20 MS/s). The S3 transmits at TX step 0 only.
@@ -21,7 +21,7 @@ REF = 1e6  # the reference tone --guard re-measures
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--port", default="/dev/ttyACM0", help="the S3's shell")
+    ap.add_argument("--port", help="the S3's shell (default: the one esp-sdr board's by-id link)")
     ap.add_argument("--rx", default="driver=wsdr", help="SoapySDR args of the receiver (add bus= with two adapters)")
     ap.add_argument("--mhz", type=float, default=2437, help="centre of both radios (default channel 6)")
     ap.add_argument("--rate", type=float, default=20e6)

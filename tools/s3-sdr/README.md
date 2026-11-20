@@ -16,26 +16,39 @@ They need `pyserial`, `numpy`, the SoapySDR Python bindings and
 
 ## The S3
 
-The v0.1.1 release image for the XIAO ESP32S3 (`esp-sdr-multiapp-v0.1.1-xiao_esp32s3.bin`) runs
-unchanged on the T-Display-S3. Put an antenna on its U.FL connector; a loose U.FL shows as a tone that
-comes and goes. To flash, first hand the USB port to the ROM, then write the image at 0:
+esp-sdr-zephyr's multiapp image for the XIAO ESP32S3 runs unchanged on the T-Display-S3. Put an
+antenna on its U.FL connector; a loose U.FL shows as a tone that comes and goes.
+
+**Our build (v0.2.0, rfprobe at boot).** The stock v0.2.0 image boots a MicroPython launcher that
+drives the XIAO's display and knob, so on the T-Display its USB shell answers only as a Python REPL.
+Build it to start rfprobe at every boot instead:
 
 ```sh
-python3 s3shell.py usj
-esptool.py --chip esp32s3 --port /dev/ttyACM0 write_flash 0x0 esp-sdr-multiapp-v0.1.1-xiao_esp32s3.bin
+west init -m https://github.com/cyber-murmel/esp-sdr-zephyr --mr v0.2.0 esp-sdr-ws && cd esp-sdr-ws
+west update && west blobs fetch hal_espressif && west blobs fetch esp-sdr-zephyr
+pip install -r modules/zephyr/scripts/requirements-base.txt -r bootloader/mcuboot/scripts/requirements.txt "esptool>=5.0.2"
+# Zephyr SDK: modules/zephyr/SDK_VERSION, minimal bundle plus xtensa-espressif_esp32s3_zephyr-elf
+west build --sysbuild -d build-multiapp -b xiao_esp32s3/esp32s3/procpu esp-sdr-zephyr/apps/multiapp \
+  -- -Dmultiapp_CONFIG_MULTIAPP_AUTOSTART=\"rfprobe\"
+west dfu -d build-multiapp --esptool --storage    # from a running esp-sdr shell (it sends usj)
 ```
 
-After every power cycle, start rfprobe (it reboots; the port is back in about 8 s):
+If the board runs something without that shell (the launcher's REPL: `import esdr; esdr.shell("usj")`,
+or other firmware), put it in download mode and write the four files `west dfu` lists with
+`esptool write-flash` (MCUboot at 0x0, the image at 0x20000, the slot trailer at 0x2bf000, the
+FAT volume at 0x400000).
+
+The prebuilt v0.1.1 image boots to the shell without rfprobe; start it with `app run rfprobe`
+(`multiapp run` from v0.2.0) after every power cycle.
 
 ```sh
-python3 s3shell.py "app run rfprobe"
 python3 s3shell.py "probe gain -1 0" "probe f 2437" "probe tone on 1000000 400" "probe tone off"
 ```
 
 **TX step 0 only.** The bench radiates at TX step 0 (the lowest of 18 steps) with amplitudes up to
 400. `s3lab.py` refuses higher steps (`MAX_STEP`).
 
-The `usj` step also restores the ESP-NOW bench firmware: `cd ../espnow-bench && pio run -e tdisplays3 -t upload`.
+`python3 s3shell.py usj` first also lets the ESP-NOW bench firmware back on: `cd ../espnow-bench && pio run -e tdisplays3 -t upload`.
 
 ## Measuring
 
