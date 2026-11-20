@@ -6,7 +6,8 @@
  * esp-sdr-zephyr's apps/rfprobe, GPL-3.0-or-later), plus "probe frames": numbered ESP-NOW frames
  * (802.11b DSSS, dsss.c) played through the DAC by esp_sdr_tx_dac_play_gen(), one call per frame.
  *
- * Bench limits, enforced here: transmit step 0 only, amplitude up to 400.
+ * Bench limits, enforced here: transmit step 0, amplitude up to 400; "probe frames" alone may use up
+ * to step FRAMES_STEP_MAX (the owner's OK for the decode test, 2026-11-20), back to 0 after each burst.
  */
 #include <errno.h>
 #include <math.h>
@@ -27,6 +28,7 @@
 #include "dsss.h"
 
 #define TX_STEP_MAX 0
+#define FRAMES_STEP_MAX 8
 #define AMP_MAX     400
 #define RUN_MAX_MS  60000
 
@@ -203,7 +205,7 @@ static void wave_build(int amp)
 }
 
 /*
- * frames <count> [period ms] [amp] [rate 1|2] [size]: <count> numbered ESP-NOW broadcasts at the
+ * frames <count> [period ms] [amp] [rate 1|2] [size] [tx step]: <count> numbered ESP-NOW broadcasts at the
  * LO, one every period, then back to receive. The payload is the ESP-NOW bench's ("WSDR", u32
  * counter, mode 0, the rate, then bytes 10.. up to size), which `test_core --wifi` tallies.
  */
@@ -211,7 +213,7 @@ static int cmd_frames(const struct shell *sh, size_t argc, char **argv)
 {
 	const long count = arg(argv, argc, 1, 10), period = arg(argv, argc, 2, 10);
 	const long amp = arg(argv, argc, 3, 400), rate = arg(argv, argc, 4, 1);
-	const long size = arg(argv, argc, 5, 10);
+	const long size = arg(argv, argc, 5, 10), step = arg(argv, argc, 6, 0);
 	struct dsss_frame *f = &frame[0];
 	uint8_t pl[DSSS_PAYLOAD_MAX];
 
@@ -219,14 +221,16 @@ static int cmd_frames(const struct shell *sh, size_t argc, char **argv)
 		return -EBUSY;
 	}
 	if (count < 1 || period < 3 || count * period > RUN_MAX_MS || amp < 1 || amp > AMP_MAX ||
-	    (rate != 1 && rate != 2) || size < 10 || size > DSSS_PAYLOAD_MAX) {
+	    (rate != 1 && rate != 2) || size < 10 || size > DSSS_PAYLOAD_MAX || step < 0 ||
+	    step > FRAMES_STEP_MAX) {
 		shell_error(sh, "frames: count >= 1, period >= 3 ms, count * period <= %d ms, amp 1..%d, "
-				"rate 1|2, size 10..%d",
-			    RUN_MAX_MS, AMP_MAX, DSSS_PAYLOAD_MAX);
+				"rate 1|2, size 10..%d, tx step 0..%d",
+			    RUN_MAX_MS, AMP_MAX, DSSS_PAYLOAD_MAX, FRAMES_STEP_MAX);
 		return -EINVAL;
 	}
-	if (esp_sdr_tx_set_gain(0) != 0 || esp_sdr_tx_get_gain() > TX_STEP_MAX) {
-		shell_error(sh, "frames: tx step 0 not set");
+	if (esp_sdr_tx_set_gain((int)step) != 0 || esp_sdr_tx_get_gain() != step) {
+		(void)esp_sdr_tx_set_gain(0);
+		shell_error(sh, "frames: tx step %ld not set", step);
 		return -EIO;
 	}
 	wave_build((int)amp);
@@ -246,6 +250,7 @@ static int cmd_frames(const struct shell *sh, size_t argc, char **argv)
 		}
 		if (dsss_espnow(f, (int)rate, src_mac, (uint16_t)n, pl, (size_t)size,
 				n * 2654435761u, (uint8_t)(0x6C ^ n)) != 0) {
+			(void)esp_sdr_tx_set_gain(0);
 			return -EINVAL;
 		}
 		st.airtime_us = f->n - 2U * DSSS_LEAD;
@@ -267,6 +272,7 @@ static int cmd_frames(const struct shell *sh, size_t argc, char **argv)
 		    st.sent, st.errors, st.last_ret, counter - (uint32_t)count, counter - 1U,
 		    esp_sdr_get_freq(), st.rate, st.size, st.airtime_us, st.period_ms, st.amp,
 		    esp_sdr_tx_get_gain());
+	(void)esp_sdr_tx_set_gain(0); /* (the raised step is for this burst only) */
 	shell_print(sh,
 		    "last frame's DAC session: restarts %u, errors %u, fill max %u us, "
 		    "slack min %d us, start margin %d us, simd %d",
@@ -286,8 +292,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(probe_cmds,
 	SHELL_CMD_ARG(gain, NULL, "<rx index|-1> [tx step, 0 only]", cmd_gain, 2, 1),
 	SHELL_CMD(tone, &tone_cmds, "loop a tone", NULL),
 	SHELL_CMD_ARG(frames, NULL,
-		      "<count> [period ms] [amp] [rate 1|2] [size]: numbered ESP-NOW frames",
-		      cmd_frames, 2, 4),
+		      "<count> [period ms] [amp] [rate 1|2] [size] [tx step 0..8]: numbered ESP-NOW frames",
+		      cmd_frames, 2, 5),
 	SHELL_SUBCMD_SET_END);
 SHELL_CMD_REGISTER(probe, &probe_cmds, "wsdrtx: tones and ESP-NOW frames at TX step 0", NULL);
 

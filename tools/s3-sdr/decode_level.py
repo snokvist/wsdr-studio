@@ -5,7 +5,7 @@ while a wsdr receiver records; test_core --wifi says which counters came through
   decode_level.py --rx driver=wsdr,bus=6 --amps 400,200,100,50,25,12,6,3 --count 200 --rate 1
 
 Per amplitude: frames sent, decoded (exact, by counter), the median SNR test_core measured.
-The S3 transmits at TX step 0; its firmware refuses more.
+The S3 transmits at TX step --step (default 0); its firmware allows frames up to step 8.
 """
 import argparse
 import json
@@ -57,6 +57,7 @@ def main():
     ap.add_argument("--period", type=int, default=5, help="ms between frames")
     ap.add_argument("--rate", type=int, default=1, choices=(1, 2))
     ap.add_argument("--size", type=int, default=10, help="ESP-NOW payload bytes, 10..100")
+    ap.add_argument("--step", type=int, default=0, choices=range(0, 9), help="TX step for the frames, 0..8")
     ap.add_argument("--test-core", default=os.path.join(HERE, "../../build/test_core"))
     ap.add_argument("--keep", help="keep the recordings in this folder")
     a = ap.parse_args()
@@ -67,13 +68,13 @@ def main():
     tmp = a.keep or tempfile.mkdtemp(prefix="decode_level-")
     os.makedirs(tmp, exist_ok=True)
     print(f"{'amp':>4} {'dB':>6} {'sent':>5} {'decoded':>8} {'%':>6} {'SNR':>6}  (rate {a.rate} Mb/s, "
-          f"{a.size} bytes, every {a.period} ms)", flush=True)
+          f"{a.size} bytes, every {a.period} ms, step {a.step})", flush=True)
     try:
         for amp in [int(x) for x in a.amps.split(",")]:
             reply, done = {}, threading.Event()
 
             def send():
-                reply["r"] = s3.cmd(f"probe frames {a.count} {a.period} {amp} {a.rate} {a.size}",
+                reply["r"] = s3.cmd(f"probe frames {a.count} {a.period} {amp} {a.rate} {a.size} {a.step}",
                                     wait=a.count * a.period / 1000 + 5)
                 done.set()
 
