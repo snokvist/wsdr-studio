@@ -9,6 +9,7 @@ plays a tone at a set offset and amplitude, which these scripts measure through 
 | `s3shell.py` | sends commands to the S3's shell |
 | `tone.py` | measures one tone or a sweep of tones: level, floor, image, frequency error |
 | `chanscan.py` | channel 1–13 occupancy, to pick a quiet channel |
+| `decode_level.py` | numbered ESP-NOW frames from the S3 at falling amplitudes: how many each level decodes |
 | `s3lab.py` | the shared S3 shell and receiver code |
 
 They need `pyserial`, `numpy`, the SoapySDR Python bindings and
@@ -50,6 +51,44 @@ python3 s3shell.py "probe gain -1 0" "probe f 2437" "probe tone on 1000000 400" 
 
 `python3 s3shell.py usj` first also lets the ESP-NOW bench firmware back on: `cd ../espnow-bench && pio run -e tdisplays3 -t upload`.
 
+## Frames: the wsdrtx firmware
+
+`fw/wsdrtx` is a multiapp app for the S3 with rfprobe's `probe f`, `probe gain` and `probe tone`
+(so `tone.py` works with it) plus `probe frames`: numbered ESP-NOW broadcasts, 802.11b DSSS at
+1 or 2 Mb/s with the long preamble, from the made-up sender 02:57:53:44:52:01. The payload is the
+ESP-NOW bench's (`WSDR`, a u32 counter, ...), so `test_core --wifi` tallies exactly which arrived.
+
+```
+probe frames <count> [period ms] [amp] [rate 1|2] [size]    # e.g. probe frames 200 5 400 1 10
+```
+
+It blocks until the burst is done (60 s at most) and prints what was sent and the counters. The
+firmware itself holds the bench limits: TX step 0, amplitude 400.
+
+How it works: `src/dsss.c` turns a frame into one phase per 1 µs symbol; at the DAC's 40 MS/s one
+symbol is exactly 40 samples, so each sample is a table entry picked by the previous, current and
+next symbol (5 states each: four phases and silence; 20 KB of DAC words, raised-cosine chips,
+±8.25 MHz). `esp_sdr_tx_dac_play_gen()` plays one frame per call from that table; the generator
+runs in internal RAM (`ESP_SDR_CODE(PACED_SAMPLE, ...)`) and fills a 408 µs bank in under 250 µs.
+
+Build (the workspace above, then a one-line hook in multiapp's CMakeLists):
+
+```sh
+git -C esp-sdr-ws/esp-sdr-zephyr apply <wsdr-studio>/tools/s3-sdr/fw/multiapp-wsdrtx.patch
+export WSDRTX_DIR=<wsdr-studio>/tools/s3-sdr/fw/wsdrtx
+west build --sysbuild -d build-wsdrtx -b xiao_esp32s3/esp32s3/procpu esp-sdr-zephyr/apps/multiapp \
+  -- -Dmultiapp_CONFIG_MULTIAPP_AUTOSTART=\"wsdrtx\"
+west dfu -d build-wsdrtx --esptool --storage
+```
+
+`fw/wsdrtx/host` checks the modulator on the PC: `frames.c` renders the same frames through the
+same table, `frames.py` makes a 20 MS/s recording with noise and a clock offset for `test_core`.
+Offline, ESP-NOW frames decode 100 % from 2 dB SNR in 20 MHz at 1 Mb/s and from about 6 dB at
+2 Mb/s.
+
+`fw/wsdrtx/src/main.c` is GPL-3.0-or-later (it builds on esp-sdr-zephyr's rfprobe); `dsss.[ch]`
+and `host/` are GPL-2.0-or-later.
+
 ## Measuring
 
 ```sh
@@ -61,6 +100,8 @@ python3 tone.py --rx driver=wsdr,bus=6 --offsets sweep --guard --csv sweep.csv  
   overflows (0.25 s at 40 MS/s: 0.5 s at 20 MS/s). After any pause in reading, for example while
   talking to the S3, the first blocks are from before the change. `Rx.psd` drains first; without
   it, tones come and go and the receiver looks deaf.
+- `decode_level.py` needs a `test_core` built from current sources (ESP-NOW tallies came with
+  #38): `cmake --build build --target test_core`.
 - `--guard` re-measures a +1 MHz reference every 4 tones and stops if it fades.
 - After a replug, an 8812BU can come back on USB 2 (5 MS/s at most); `Rx` stops with an error then.
   `wsdr_usbmode --bus N --port 1 --to 3` (wifi-sdr) switches it back.

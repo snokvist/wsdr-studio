@@ -1,0 +1,17 @@
+diff --git a/apps/multiapp/CMakeLists.txt b/apps/multiapp/CMakeLists.txt
+index 9f200af..ff69094 100644
+--- a/apps/multiapp/CMakeLists.txt
++++ b/apps/multiapp/CMakeLists.txt
+@@ -368,6 +368,12 @@ endif()
+ multiapp_extension(hello ${hello_requires} SOURCES ${CMAKE_CURRENT_LIST_DIR}/ext/hello.c)
+ multiapp_extension(capture STACK 4096 REQUIRES sdr SOURCES ${apps_dir}/capture/src/main.c)
+ multiapp_extension(rfprobe STACK 2048 REQUIRES sdr SOURCES ${apps_dir}/rfprobe/src/main.c)
++# wsdrtx (wsdr-studio tools/s3-sdr/fw): WSDRTX_DIR=<its folder> in the environment.
++if(DEFINED ENV{WSDRTX_DIR})
++  set(WSDRTX_DIR $ENV{WSDRTX_DIR})
++  multiapp_extension(wsdrtx STACK 2048 AREA REQUIRES sdr
++    SOURCES ${WSDRTX_DIR}/src/main.c ${WSDRTX_DIR}/src/dsss.c)
++endif()
+ multiapp_extension(wpan STACK 1536 REQUIRES ieee154 SOURCES ${apps_dir}/wpan/src/main.c)
+ set(stream ${apps_dir}/stream/src)
+ multiapp_extension(stream APP ${apps_dir}/stream STACK 2048 USB 1 REQUIRES sdr # MULTIAPP_USB_NCM
