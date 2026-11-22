@@ -142,6 +142,11 @@ void Engine::poll() {
     std::fprintf(stderr, "wsdr-studiod: view %c: stream fault %llu, restarted: %s\n", 'A' + _slot, static_cast<unsigned long long>(st.restarts), st.last_fault.c_str());
     _seen_restarts = st.restarts;
   }
+  if (st.reopens > _seen_reopens) {
+    std::fprintf(stderr, "wsdr-studiod: view %c: adapter re-opened after repeated stream faults (%llu so far)\n", 'A' + _slot,
+                 static_cast<unsigned long long>(st.reopens));
+    _seen_reopens = st.reopens;
+  }
   if (!st.running && (st.state == wsdr::RxState::Lost || st.state == wsdr::RxState::Error) &&
       !_lost_requested.exchange(true))
     submit({{"cmd", "_lost"}}, nullptr);
@@ -207,37 +212,14 @@ json Engine::run(const json &c) {
     const auto r = rx();
     if (!r || !r->is_open())
       throw CmdError("closed", "no adapter open");
-    wsdr::RxSettings s;
-    {
-      std::lock_guard<std::mutex> l(_sm);
-      s = _view;
+    std::optional<bool> offset;
+    const wsdr::RxSettings s = parse_set(c, offset);
+    // a new tuning (not a gain change) ends a sweep: the view goes where it was told
+    if (r->sweeping() && (c.contains("freq") || c.contains("rate_sel") || c.contains("wide") ||
+                          c.contains("allow_gapped") || offset)) {
+      r->sweep({}, 0);
+      _cb.event({{"type", "sweep"}, {"active", false}});
     }
-    if (c.contains("freq")) {
-      s.freq = num(c, "freq", 2.3e9, 6.2e9);
-      bool five;
-      {
-        std::lock_guard<std::mutex> l(_sm);
-        five = _five_ghz_only;
-      }
-      if (five && s.freq < 3.7e9)
-        throw CmdError("bad_request", "this adapter receives 5 GHz only");
-    }
-    if (c.contains("rate_sel"))
-      s.rate_sel = integer(c, "rate_sel", 0, 5); // 0: 80 MS/s, gapped only (the Receiver clamps to its caps)
-    // a gapped span only when asked for: a span change without it is a continuous one (the widest the
-    // adapter carries, if it asks for more); a change of anything else keeps what the view has
-    if (c.contains("allow_gapped"))
-      s.allow_gapped = flag(c, "allow_gapped");
-    else if (c.contains("rate_sel"))
-      s.allow_gapped = false;
-    // (applied once every field has passed: a rejected command changes nothing)
-    const std::optional<bool> offset = c.contains("offset_tuning") ? std::optional<bool>(flag(c, "offset_tuning")) : std::nullopt;
-    if (c.contains("gain_db"))
-      s.gain_db = num(c, "gain_db", 0, 100);
-    if (c.contains("agc"))
-      s.agc = flag(c, "agc");
-    if (c.contains("wide"))
-      s.wide = flag(c, "wide");
     const bool caps_changed = offset && _offset_tuning.exchange(*offset) != *offset;
     const wsdr::RxSettings hw = hw_for(s);
     r->set(hw);
@@ -245,6 +227,62 @@ json Engine::run(const json &c) {
     _cb.event(settings());
     if (caps_changed)
       _cb.event(caps()); // the spans' captured rates (hw_fs) changed
+    return {};
+  }
+  // {"centres": [Hz, ...], "dwell_ms", and any "set" field but freq}: step the radio through the
+  // centres, dwell_ms each (gap_ms idle between steps, default 30), round and round; no centres (or an
+  // empty list) stops it. Every step is a
+  // stream run of its own: a "sweep_step" event names the step before the first row of its run, and
+  // every row of that run carries its run byte.
+  if (cmd == "sweep") {
+    const auto r = rx();
+    if (!r || !r->is_open())
+      throw CmdError("closed", "no adapter open");
+    if (!c.contains("centres") || (c["centres"].is_array() && c["centres"].empty())) {
+      r->sweep({}, 0);
+      _cb.event({{"type", "sweep"}, {"active", false}});
+      return {};
+    }
+    if (!c["centres"].is_array() || c["centres"].size() > kSweepMaxCentres)
+      throw CmdError("bad_request", "centres must be a list of up to " + std::to_string(kSweepMaxCentres) + " frequencies");
+    if (c.contains("freq"))
+      throw CmdError("bad_request", "a sweep takes centres, not freq");
+    std::vector<double> centres;
+    for (const auto &f : c["centres"]) {
+      if (!f.is_number())
+        throw CmdError("bad_request", "centres must be numbers (Hz)");
+      centres.push_back(f.get<double>());
+    }
+    const double dwell_ms = c.contains("dwell_ms") ? num(c, "dwell_ms", kSweepDwellMs[0], kSweepDwellMs[1]) : 150.0;
+    // idle between steps: MEASURED (8812BU, 40 MS/s, 14 centres, 160 ms dwell, 5 min each) 5 RX-DMA
+    // stalls with no gap, 2 with 30 ms (0.17 % of runs, about what a settle-paced set loop sees)
+    const double gap_ms = c.contains("gap_ms") ? num(c, "gap_ms", 0, 1000) : 30.0;
+    json sc = c;
+    std::optional<bool> offset;
+    wsdr::RxSettings s;
+    for (const double f : centres) { // (each passes set's checks: range, 5 GHz-only adapters)
+      sc["freq"] = f;
+      s = parse_set(sc, offset);
+    }
+    s.freq = centres[0];
+    // the sweep tunes the radio itself: no offset tuning (offset_tuning:false in the command turns it off)
+    if (offset && *offset)
+      throw CmdError("bad_request", "a sweep does not combine with offset tuning");
+    if (!offset) {
+      const wsdr::RxSettings hw = hw_for(s);
+      if (hw.freq != s.freq || hw.rate_sel != s.rate_sel)
+        throw CmdError("bad_request", "a sweep does not combine with offset tuning (send offset_tuning:false, or use rate_sel 1)");
+    }
+    const bool caps_changed = offset && _offset_tuning.exchange(false);
+    r->set(s);
+    set_view(s, r->settings());
+    r->sweep(centres, dwell_ms / 1e3, gap_ms / 1e3);
+    const wsdr::RxSettings applied = r->settings();
+    _cb.event(settings());
+    _cb.event({{"type", "sweep"}, {"active", true}, {"centres", centres}, {"dwell_ms", dwell_ms}, {"gap_ms", gap_ms},
+               {"rate_sel", applied.rate_sel}, {"fs", wsdr::Receiver::rate_of(applied.rate_sel)}});
+    if (caps_changed)
+      _cb.event(caps());
     return {};
   }
   if (cmd == "tap") { // follow one signal with a tap: {"kind", "freq" (Hz; 0 stops: "watch" names the one to stop), "params"}
@@ -548,7 +586,8 @@ void Engine::open_adapter(uint16_t pid, const json &c) {
   {
     std::lock_guard<std::mutex> l(_rxm);
     _rx = std::move(r);
-    _seen_restarts = 0; // (the count is per receiver)
+    _seen_restarts = 0; // (the counts are per receiver)
+    _seen_reopens = 0;
   }
   _cb.event(caps());
   _cb.event(settings());
@@ -585,6 +624,42 @@ void Engine::close_adapter(const std::string &why) {
   std::lock_guard<std::mutex> l(_sm);
   _state = "closed";
   _caps = {};
+}
+
+// A "set" command's fields over the current view (freq, rate_sel, allow_gapped, gain_db, agc, wide;
+// offset_tuning goes to `offset`). Throws on a bad field; changes nothing.
+wsdr::RxSettings Engine::parse_set(const json &c, std::optional<bool> &offset) const {
+  wsdr::RxSettings s;
+  {
+    std::lock_guard<std::mutex> l(_sm);
+    s = _view;
+  }
+  if (c.contains("freq")) {
+    s.freq = num(c, "freq", 2.3e9, 6.2e9);
+    bool five;
+    {
+      std::lock_guard<std::mutex> l(_sm);
+      five = _five_ghz_only;
+    }
+    if (five && s.freq < 3.7e9)
+      throw CmdError("bad_request", "this adapter receives 5 GHz only");
+  }
+  if (c.contains("rate_sel"))
+    s.rate_sel = integer(c, "rate_sel", 0, 5); // 0: 80 MS/s, gapped only (the Receiver clamps to its caps)
+  // a gapped span only when asked for: a span change without it is a continuous one (the widest the
+  // adapter carries, if it asks for more); a change of anything else keeps what the view has
+  if (c.contains("allow_gapped"))
+    s.allow_gapped = flag(c, "allow_gapped");
+  else if (c.contains("rate_sel"))
+    s.allow_gapped = false;
+  offset = c.contains("offset_tuning") ? std::optional<bool>(flag(c, "offset_tuning")) : std::nullopt;
+  if (c.contains("gain_db"))
+    s.gain_db = num(c, "gain_db", 0, 100);
+  if (c.contains("agc"))
+    s.agc = flag(c, "agc");
+  if (c.contains("wide"))
+    s.wide = flag(c, "wide");
+  return s;
 }
 
 wsdr::RxSettings Engine::hw_for(const wsdr::RxSettings &v) const {
@@ -674,6 +749,7 @@ json Engine::caps() const {
     j["rates"] = rates;
     j["gain_max"] = _caps.gain_max;
     j["gain_step"] = _caps.gain_step;
+    j["sweep"] = {{"max_centres", kSweepMaxCentres}, {"dwell_ms", {kSweepDwellMs[0], kSweepDwellMs[1]}}};
   }
   return j;
 }
@@ -690,7 +766,9 @@ json Engine::status() const {
     const wsdr::RxStatus st = r->status();
     j["rx"] = {{"state", wsdr::rx_state_name(st.state)}, {"banks", st.banks}, {"restarts", st.restarts}, {"settling", st.settling},
                {"channel", st.channel}, {"width", st.width}, {"centre", st.centre_hz}, {"fs", st.fs},
-               {"gapped", st.gapped}, {"error", st.error}};
+               {"gapped", st.gapped}, {"error", st.error}, {"reopens", st.reopens}};
+    if (st.step >= 0)
+      j["rx"]["sweep"] = {{"step", st.step}, {"pass", st.pass}};
     wsdr::RxSettings v;
     bool cu;
     {
@@ -954,6 +1032,10 @@ void Engine::dsp_loop() {
         const bool crop = applied.hi > applied.lo && same(applied);
         sp.set_crop(crop ? applied.lo : 0, crop ? applied.hi : 0);
       }
+      if (b->meta.step >= 0 && b->meta.gen != gen) // (posted before the rows of the run: one queue per client)
+        _cb.event({{"type", "sweep_step"}, {"step", b->meta.step}, {"pass", b->meta.pass}, {"run", b->meta.gen & 0xff},
+                   {"centre", b->meta.centre_hz}, {"freq", b->meta.centre_hz + b->meta.shift_hz}, {"fs", b->meta.fs},
+                   {"t", now_s()}});
       gen = b->meta.gen;
       cfg = b->meta.cfg;
       sp.process(b->data.data(), b->bytes, b->meta, [&](const Row &r) {
