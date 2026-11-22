@@ -16,6 +16,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -67,6 +68,10 @@ private:
   std::map<std::string, int> _held; // "bus-port" -> slot
 };
 
+// The "sweep" command's limits (also in caps)
+constexpr size_t kSweepMaxCentres = 256;
+constexpr double kSweepDwellMs[2] = {10, 10000};
+
 class Engine {
 public:
   struct Callbacks {
@@ -112,6 +117,7 @@ private:
   // the window asked for. hw_for: the radio settings for a view; set_view: remember the view and
   // hand the crop window to the DSP thread.
   wsdr::RxSettings hw_for(const wsdr::RxSettings &view) const;
+  wsdr::RxSettings parse_set(const json &c, std::optional<bool> &offset) const;
   void set_view(const wsdr::RxSettings &view, const wsdr::RxSettings &hw); // hw: the receiver's settings
   std::shared_ptr<wsdr::Receiver> rx() const {
     std::lock_guard<std::mutex> l(_rxm);
@@ -182,6 +188,7 @@ private:
   std::atomic<uint32_t> _rec_gen{0}, _rec_cfg{0}; // the stream run the file belongs to
   std::atomic<uint64_t> _rec_id{0};               // counts recordings: stale stop requests are ignored
   std::atomic<uint64_t> _seen_restarts{0};        // poll(): stream faults logged so far (this receiver)
+  std::atomic<uint64_t> _seen_reopens{0};         // poll(): in-place re-opens logged so far (this receiver)
   std::atomic<bool> _rec_stop_requested{false}, _lost_requested{false};
 
   mutable std::mutex _sm; // status strings
